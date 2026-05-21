@@ -1,0 +1,16 @@
+[package]
+name = "api-almanac-runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+api-almanac-model = { path = "../api-almanac-model" }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+mockito = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

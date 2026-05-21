@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024"
+     xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"
+                    gradientUnits="objectBoundingBox">
+      <stop offset="0%"   stop-color="#1a4a8a"/>
+      <stop offset="100%" stop-color="#2e76cc"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="185" ry="185" fill="url(#bg)"/>
+
+  <!-- Letter A (evenodd: outer fill minus inner triangle) -->
+  <path d="M 162.6,751.4 L 469.6,223.4 L 512.0,248.0 L 554.4,223.4 L 861.4,751.4 L 776.6,800.6 L 631.3,550.7 L 392.7,550.7 L 247.4,800.6 Z M 554.4,272.6 L 469.6,272.6 L 580.2,462.7 L 443.8,462.7 Z"
+        fill="white" fill-rule="evenodd"/>
+
+  <!-- Signal arcs -->
+  <g fill="none" stroke="white" stroke-linecap="round">
+    <path d="M 456.0,230.0 A 56,56 0 0 1 568.0,230.0" stroke-width="30"/>
+    <path d="M 416.0,230.0 A 96,96 0 0 1 608.0,230.0" stroke-width="30"/>
+    <path d="M 376.0,230.0 A 136,136 0 0 1 648.0,230.0" stroke-width="30"/>
+  </g>
+
+  <!-- Center dot -->
+  <circle cx="512" cy="230" r="20" fill="white"/>
+
+</svg>

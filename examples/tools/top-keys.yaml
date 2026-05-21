@@ -1,0 +1,7 @@
+id: top-keys
+name: Top-level Keys
+description: Lists the top-level keys from a JSON response body.
+command:
+  executable: python3
+  args:
+    - tools/top-keys.py

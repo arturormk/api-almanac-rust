@@ -1,0 +1,23 @@
+[package]
+name = "api-almanac-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "almanac"
+path = "src/main.rs"
+
+[dependencies]
+api-almanac-model    = { path = "../api-almanac-model" }
+api-almanac-runner   = { path = "../api-almanac-runner" }
+api-almanac-typesketch = { path = "../api-almanac-typesketch" }
+api-almanac-export   = { path = "../api-almanac-export" }
+api-almanac-store    = { path = "../api-almanac-store" }
+clap    = { version = "4", features = ["derive"] }
+tokio   = { version = "1", features = ["rt-multi-thread", "macros"] }
+anyhow  = "1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

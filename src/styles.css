@@ -1,0 +1,54 @@
+:root {
+  --bg: #ffffff;
+  --bg-2: #f7f7f8;
+  --bg-input: #ffffff;
+  --border: #e1e1e4;
+  --text: #1a1a1a;
+  --text-dim: #777;
+  --accent: #2a6db5;
+  --accent-hover: #1f5a9b;
+  --danger: #d63939;
+  --warning: #aa7700;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
+
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+}
+
+#root {
+  height: 100vh;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --bg-2: #252527;
+    --bg-input: #1c1c1e;
+    --border: #3a3a3c;
+    --text: #e8e8ea;
+    --text-dim: #888;
+    --accent: #5b9bd6;
+    --accent-hover: #4a8ac5;
+    --danger: #e06060;
+    --warning: #d4a843;
+  }
+
+  .badge-ok { background: #1a3a24; color: #7ecf94; }
+  .badge-redirect { background: #3a2f00; color: #f0c040; }
+  .badge-client-err { background: #3a1a1a; color: #e08080; }
+  .badge-server-err { background: #2a0a0a; color: #c06060; }
+}
