@@ -359,7 +359,8 @@ function SpotCheckPanel({
   const [exportErr, setExportErr] = useState<string | null>(null);
 
   const envName = project.environments.find((e) => e.id === selectedEnvId)?.name ?? null;
-  const total = project.requests.length;
+  const orderedRequests = flattenTree(buildTree(project.folders, project.requests));
+  const total = orderedRequests.length;
   const done = !running && ranAt !== null;
 
   const passed = done
@@ -385,9 +386,9 @@ function SpotCheckPanel({
     const wallStart = Date.now();
     const acc: SpotCheckResult[] = [];
 
-    for (let i = 0; i < project.requests.length; i++) {
+    for (let i = 0; i < orderedRequests.length; i++) {
       setCurrent(i + 1);
-      const req = project.requests[i];
+      const req = orderedRequests[i];
       try {
         const result = await invoke<RunResult>("run_project_request", {
           filePath: req.file_path,
@@ -789,6 +790,15 @@ function buildTree(
       children: buildTree(allFolders, requests, f.path),
     })),
   ];
+}
+
+function flattenTree(items: TreeItem[]): RequestSummary[] {
+  const result: RequestSummary[] = [];
+  for (const item of items) {
+    if (item.kind === "request") result.push(item.req);
+    else result.push(...flattenTree(item.children));
+  }
+  return result;
 }
 
 // ── Sortable drag-and-drop wrapper ─────────────────────────────────────────
