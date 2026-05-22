@@ -300,6 +300,50 @@ impl ProjectLoader {
         renumber_files(&self.root, folder_abs, siblings)
     }
 
+    /// Duplicate a request YAML file in the same folder.
+    ///
+    /// The copy gets a unique display name (`"{name} copy"`, `"{name} copy 2"`, …) and a
+    /// new `id` derived from the copy name. No numeric prefix is assigned so the copy
+    /// sorts last; the user can reorder via drag-and-drop.
+    /// Returns the new path relative to the project root.
+    pub fn duplicate_request(&self, relative_path: &Path) -> Result<PathBuf, ModelError> {
+        use std::collections::HashSet;
+
+        let abs_path = self.root.join(relative_path);
+        let original: RequestDef = load_yaml(&abs_path)?;
+
+        let folder_abs = abs_path.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+        })?;
+
+        let siblings = yaml_files_in(folder_abs)?;
+        let existing_names: Vec<String> = siblings
+            .iter()
+            .filter_map(|p| load_yaml::<RequestDef>(p).ok())
+            .map(|r| r.name)
+            .collect();
+        let existing_files: HashSet<String> = siblings
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_owned))
+            .collect();
+
+        let new_name = copy_name(&original.name, &existing_names);
+        let new_id = derive_copy_id(&original.id, &new_name);
+        let new_file_name = unique_file_name(&slugify(&new_name), &existing_files);
+
+        let new_rel_path = relative_path
+            .parent()
+            .map(|p| p.join(&new_file_name))
+            .unwrap_or_else(|| PathBuf::from(&new_file_name));
+
+        let mut new_req = original;
+        new_req.id = new_id;
+        new_req.name = new_name;
+
+        self.save_request(&new_rel_path, &new_req)?;
+        Ok(new_rel_path)
+    }
+
     /// Reorder a group (directory) among its siblings by assigning consecutive 1..=N prefixes.
     ///
     /// `folder` is relative to `requests/`, e.g. `"2-users"` or `"1-auth/3-oauth"`.
@@ -354,6 +398,65 @@ impl ProjectLoader {
 }
 
 // ── Private helpers ────────────────────────────────────────────────────────
+
+/// Generate a copy display name: `"{name} copy"`, `"{name} copy 2"`, etc.
+fn copy_name(original: &str, existing: &[String]) -> String {
+    let base = format!("{original} copy");
+    if !existing.contains(&base) {
+        return base;
+    }
+    let mut i = 2u32;
+    loop {
+        let candidate = format!("{original} copy {i}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        i += 1;
+    }
+}
+
+/// Derive an `id` for a duplicate: reuse the namespace of the original id
+/// (everything before the last `.`) and append a slug of the new name.
+fn derive_copy_id(original_id: &str, new_name: &str) -> String {
+    let slug = slugify(new_name);
+    match original_id.rfind('.') {
+        Some(idx) => format!("{}.{slug}", &original_id[..idx]),
+        None => slug,
+    }
+}
+
+/// Slugify a string for use in file names: lowercase, spaces → hyphens,
+/// strip non-alphanumeric (except hyphens), collapse consecutive hyphens.
+fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, ' ' | '-' | '_') {
+            if !out.ends_with('-') {
+                out.push('-');
+            }
+        }
+    }
+    out.trim_matches('-').to_owned()
+}
+
+/// Return a file name `"{stem}.yaml"` that does not exist in `existing`.
+/// Falls back to `"{stem}-2.yaml"`, `"{stem}-3.yaml"`, etc.
+fn unique_file_name(stem: &str, existing: &std::collections::HashSet<String>) -> String {
+    let candidate = format!("{stem}.yaml");
+    if !existing.contains(&candidate) {
+        return candidate;
+    }
+    let mut i = 2u32;
+    loop {
+        let candidate = format!("{stem}-{i}.yaml");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        i += 1;
+    }
+}
 
 /// Sort key: `(numeric_prefix, lowercase_remainder)` from the last path component.
 fn order_key(path: &Path) -> (u32, String) {

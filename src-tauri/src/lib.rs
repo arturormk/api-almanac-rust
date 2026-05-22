@@ -896,6 +896,21 @@ fn move_request(
     })
 }
 
+#[tauri::command]
+fn duplicate_request(
+    state: State<'_, AppState>,
+    file_path: String,
+) -> Result<MoveResult, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    let new_rel = loader.duplicate_request(Path::new(&file_path)).map_err(|e| e.to_string())?;
+    let project = load_project_data(&loader)?;
+    Ok(MoveResult {
+        new_file_path: new_rel.to_string_lossy().replace('\\', "/"),
+        project,
+    })
+}
+
 /// Reorder a request within its folder. `new_position` is 0-based (clamped automatically).
 /// Renumbers all sibling files with consecutive 1..=N prefixes.
 /// Returns the new path of the moved request alongside the refreshed project.
@@ -1056,6 +1071,7 @@ pub fn run() {
             delete_request,
             rename_request,
             move_request,
+            duplicate_request,
             reorder_request,
             reorder_group,
         ])

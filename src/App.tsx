@@ -854,6 +854,7 @@ function Sidebar({
   onRenameRequest,
   onDeleteRequest,
   onMoveRequest,
+  onDuplicateRequest,
   onReorderRequest,
   onReorderGroup,
 }: {
@@ -876,6 +877,7 @@ function Sidebar({
   onRenameRequest: (filePath: string, newName: string) => void;
   onDeleteRequest: (filePath: string) => void;
   onMoveRequest: (filePath: string, newFolder: string) => void;
+  onDuplicateRequest: (filePath: string) => void;
   onReorderRequest: (filePath: string, newPosition: number) => void;
   onReorderGroup: (folder: string, newPosition: number) => void;
 }) {
@@ -1371,6 +1373,16 @@ function Sidebar({
               >
                 Rename
               </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  const fp = ctxMenu.filePath;
+                  setCtxMenu(null);
+                  onDuplicateRequest(fp);
+                }}
+              >
+                Duplicate
+              </button>
               {ctxMenu.siblingIndex > 0 && (
                 <button
                   className="context-menu-item"
@@ -1766,6 +1778,14 @@ export default function App() {
     } catch (e) { setReqError(String(e)); }
   }
 
+  async function duplicateProjectRequest(filePath: string) {
+    try {
+      const result = await invoke<MoveResult>("duplicate_request", { filePath });
+      setProject(result.project);
+      selectRequest(result.new_file_path);
+    } catch (e) { setReqError(String(e)); }
+  }
+
   async function reorderRequest(filePath: string, newPosition: number) {
     try {
       const result = await invoke<ReorderResult>("reorder_request", { filePath, newPosition });
@@ -1967,6 +1987,7 @@ export default function App() {
         onRenameRequest={renameRequestName}
         onDeleteRequest={deleteProjectRequest}
         onMoveRequest={moveProjectRequest}
+        onDuplicateRequest={duplicateProjectRequest}
         onReorderRequest={reorderRequest}
         onReorderGroup={reorderGroup}
       />
