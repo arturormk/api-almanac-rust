@@ -22,7 +22,7 @@ import "./App.css";
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
 type BodyKind = "none" | "json" | "text" | "form";
-type RequestTab = "params" | "headers" | "body" | "cases" | "notes" | "captures";
+type RequestTab = "params" | "headers" | "body" | "cases" | "notes" | "captures" | "expects";
 type ResponseTab = "body" | "headers" | "sketch" | "tools";
 
 interface KvRow {
@@ -110,6 +110,13 @@ interface RecentProject {
   name: string;
 }
 
+interface ExpectData {
+  status?: number;
+  time_ms?: string;
+  headers?: Record<string, string>;
+  json?: Record<string, string>;
+}
+
 interface RequestData {
   uid: string;
   id: string;
@@ -124,6 +131,7 @@ interface RequestData {
   tags: string[];
   cases: Record<string, Record<string, string>>;
   capture?: Record<string, string>;
+  expect?: ExpectData;
 }
 
 // ── Spot-check types ───────────────────────────────────────────────────────
@@ -315,6 +323,64 @@ function CapturesEditor({
         );
       })}
       <button className="kv-add" onClick={() => onChange([...rows, mkRow()])}>+ Add</button>
+    </div>
+  );
+}
+
+// ── Expectations editor ────────────────────────────────────────────────────
+
+function ExpectationsEditor({
+  status, onStatusChange,
+  timeMs, onTimeMsChange,
+  headers, onHeadersChange,
+  json, onJsonChange,
+}: {
+  status: string; onStatusChange: (v: string) => void;
+  timeMs: string; onTimeMsChange: (v: string) => void;
+  headers: KvRow[]; onHeadersChange: (rows: KvRow[]) => void;
+  json: KvRow[]; onJsonChange: (rows: KvRow[]) => void;
+}) {
+  return (
+    <div className="expects-editor">
+      <div className="expects-scalars">
+        <label className="expects-label">Status</label>
+        <input
+          className="expects-scalar-input"
+          type="number"
+          placeholder="200"
+          value={status}
+          onChange={(e) => onStatusChange(e.target.value)}
+        />
+        <label className="expects-label">Time (ms)</label>
+        <input
+          className="expects-scalar-input"
+          type="text"
+          placeholder="&lt; 500"
+          value={timeMs}
+          onChange={(e) => onTimeMsChange(e.target.value)}
+        />
+      </div>
+      <div className="expects-section">
+        <div className="expects-section-label">Headers</div>
+        <KvEditor
+          rows={headers}
+          onChange={onHeadersChange}
+          keyPlaceholder="Content-Type"
+          valuePlaceholder="contains application/json"
+        />
+      </div>
+      <div className="expects-section">
+        <div className="expects-section-label">JSON</div>
+        <KvEditor
+          rows={json}
+          onChange={onJsonChange}
+          keyPlaceholder="json.field.path"
+          valuePlaceholder="exists · equals value · contains text"
+        />
+      </div>
+      <p className="captures-hint">
+        Rules: <code>exists</code> · <code>equals X</code> · <code>contains X</code> · time ops: <code>&lt; 500</code> <code>&lt;= 1000</code>
+      </p>
     </div>
   );
 }
@@ -1620,6 +1686,10 @@ export default function App() {
   const [params, setParams] = useState<KvRow[]>([mkRow()]);
   const [reqHeaders, setReqHeaders] = useState<KvRow[]>([mkRow()]);
   const [captures, setCaptures] = useState<KvRow[]>([mkRow()]);
+  const [expectStatus, setExpectStatus] = useState<string>("");
+  const [expectTimeMs, setExpectTimeMs] = useState<string>("");
+  const [expectHeaders, setExpectHeaders] = useState<KvRow[]>([mkRow()]);
+  const [expectJson, setExpectJson] = useState<KvRow[]>([mkRow()]);
   const [bodyKind, setBodyKind] = useState<BodyKind>("none");
   const [bodyContent, setBodyContent] = useState("");
 
@@ -1670,6 +1740,10 @@ export default function App() {
     }
     setNotes(data.notes ?? "");
     setCaptures(mapToRows(data.capture ?? {}));
+    setExpectStatus(data.expect?.status != null ? String(data.expect.status) : "");
+    setExpectTimeMs(data.expect?.time_ms ?? "");
+    setExpectHeaders(mapToRows(data.expect?.headers ?? {}));
+    setExpectJson(mapToRows(data.expect?.json ?? {}));
     const newCases: Record<string, KvRow[]> = {};
     for (const [name, vars] of Object.entries(data.cases ?? {})) {
       newCases[name] = mapToRows(vars);
@@ -1688,6 +1762,9 @@ export default function App() {
     for (const [name, rows] of Object.entries(cases)) {
       casesMap[name] = toMap(rows);
     }
+    const expectsActive =
+      expectStatus.trim() || expectTimeMs.trim() ||
+      activeRows(expectHeaders).length > 0 || activeRows(expectJson).length > 0;
     return {
       uid: reqUid, id: reqId, name: reqName || reqId, method, url,
       headers: toMap(reqHeaders), query: toMap(params),
@@ -1695,6 +1772,12 @@ export default function App() {
       body_kind: bodyKind !== "none" ? bodyKind : undefined,
       notes: notes.trim() || undefined, tags: [], cases: casesMap,
       capture: toMap(captures),
+      expect: expectsActive ? {
+        status: expectStatus.trim() ? parseInt(expectStatus.trim(), 10) : undefined,
+        time_ms: expectTimeMs.trim() || undefined,
+        headers: toMap(expectHeaders),
+        json: toMap(expectJson),
+      } : undefined,
       ...overrides,
     };
   }
@@ -1735,6 +1818,7 @@ export default function App() {
     setIsNewRequest(false);
     setNewReqDisplayName(""); setNewReqFolder("");
     setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]); setCaptures([mkRow()]);
+    setExpectStatus(""); setExpectTimeMs(""); setExpectHeaders([mkRow()]); setExpectJson([mkRow()]);
     setBodyKind("none"); setBodyContent(""); setNotes("");
     setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null);
     setIsDirty(false); setSaveStatus("idle");
@@ -2229,7 +2313,7 @@ export default function App() {
         {/* Request pane */}
         <div className="request-pane">
           <div className="tab-bar">
-            {(["params","headers","body","cases","notes","captures"] as RequestTab[]).map((t) => (
+            {(["params","headers","body","cases","notes","captures","expects"] as RequestTab[]).map((t) => (
               <button
                 key={t}
                 className={`tab${reqTab === t ? " tab-active" : ""}`}
@@ -2251,6 +2335,11 @@ export default function App() {
                 {t === "captures" && activeRows(captures).length > 0 && (
                   <span className="tab-count">{activeRows(captures).length}</span>
                 )}
+                {t === "expects" && (() => {
+                  const n = (expectStatus.trim() ? 1 : 0) + (expectTimeMs.trim() ? 1 : 0)
+                    + activeRows(expectHeaders).length + activeRows(expectJson).length;
+                  return n > 0 ? <span className="tab-count">{n}</span> : null;
+                })()}
               </button>
             ))}
             {isProjectMode && isDirty && <span className="dirty-dot" title="Unsaved changes" />}
@@ -2400,6 +2489,18 @@ export default function App() {
                 />
                 <p className="captures-hint">Supported paths: <code>json.field</code> · <code>json.nested.array[0]</code> · <code>headers.x-header-name</code></p>
               </div>
+            )}
+            {reqTab === "expects" && (
+              <ExpectationsEditor
+                status={expectStatus}
+                onStatusChange={(v) => { setExpectStatus(v); if (isProjectMode) markDirty(); }}
+                timeMs={expectTimeMs}
+                onTimeMsChange={(v) => { setExpectTimeMs(v); if (isProjectMode) markDirty(); }}
+                headers={expectHeaders}
+                onHeadersChange={(v) => { setExpectHeaders(v); if (isProjectMode) markDirty(); }}
+                json={expectJson}
+                onJsonChange={(v) => { setExpectJson(v); if (isProjectMode) markDirty(); }}
+              />
             )}
           </div>
         </div>

@@ -1122,6 +1122,46 @@
   white-space: pre-wrap;
 }
 
+/* ── Expectations editor ─────────────────────────────────────────────────── */
+
+.expects-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 0;
+}
+
+.expects-scalars {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.expects-label {
+  font-size: 12px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.expects-scalar-input {
+  width: 90px;
+}
+
+.expects-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.expects-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-muted);
+}
+
 /* ── Cases editor ────────────────────────────────────────────────────────── */
 
 .cases-editor {

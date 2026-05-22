@@ -4,7 +4,7 @@ use api_almanac_tools as tools;
 use api_almanac_typesketch as typesketch;
 use api_almanac_model::{
     generate_uid, parse_order_prefix, strip_order_prefix,
-    AlmanacProject, BodyKind, Environment, ProjectLoader, RequestDef, ResolvedBody, ResolvedRequest,
+    AlmanacProject, BodyKind, Environment, Expect, ProjectLoader, RequestDef, ResolvedBody, ResolvedRequest,
     VariableResolver,
 };
 use api_almanac_runner::{apply_captures, run_checks, Check, HttpResponse, Runner};
@@ -75,6 +75,18 @@ pub struct FolderSummary {
     pub order: u32,     // numeric order of the last component
 }
 
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct ExpectData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_ms: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub json: HashMap<String, String>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RequestData {
     #[serde(default)]
@@ -97,6 +109,8 @@ pub struct RequestData {
     pub cases: HashMap<String, HashMap<String, String>>,
     #[serde(default)]
     pub capture: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expect: Option<ExpectData>,
 }
 
 #[derive(Serialize)]
@@ -779,6 +793,12 @@ fn request_def_to_data(req: RequestDef) -> RequestData {
         tags: req.tags,
         cases: req.cases,
         capture: req.capture,
+        expect: req.expect.map(|e| ExpectData {
+            status: e.status,
+            time_ms: e.time_ms,
+            headers: e.headers,
+            json: e.json,
+        }),
     }
 }
 
@@ -806,7 +826,12 @@ fn request_data_to_def(data: RequestData) -> RequestDef {
         query: data.query,
         body,
         cases: data.cases,
-        expect: None,
+        expect: data.expect.map(|e| Expect {
+            status: e.status,
+            time_ms: e.time_ms,
+            headers: e.headers,
+            json: e.json,
+        }),
         capture: data.capture,
         redact: Default::default(),
         notes: data.notes,

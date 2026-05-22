@@ -31,6 +31,16 @@ my-project/
 - `environments/` is scanned non-recursively; all env files are direct children.
 - `docs/`, `sketches/`, and `.api-almanac/` are generated. Never create or edit them.
 
+### Sidebar display order
+
+Folders and request files are displayed in the order determined by an optional `N-` numeric prefix on the file or directory name:
+
+- `1-login.yaml` sorts before `2-register.yaml` sorts before `10-verify.yaml`
+- `requests/1-auth/1-login.yaml` — folder `auth` is first; `login` is first within it
+- Files and folders without a numeric prefix are sorted after all prefixed siblings
+
+**When generating a new project from scratch, omit the numeric prefix entirely.** The app assigns prefixes when the user drags to reorder. Plain names like `requests/auth/login.yaml` are valid and will appear in alphabetical order.
+
 ---
 
 ## File formats
@@ -46,11 +56,11 @@ description: |      # optional — free-form description
   A sample API project.
 ```
 
-| Field         | Type   | Required | Notes                                  |
-|---------------|--------|----------|----------------------------------------|
-| `id`          | string | yes      | Slug; used as a prefix in CLI output   |
-| `name`        | string | yes      | Displayed in the UI sidebar            |
-| `description` | string | no       | Free text; omit if not useful          |
+| Field         | Type   | Required | Notes                                |
+|---------------|--------|----------|--------------------------------------|
+| `id`          | string | yes      | Slug; used as a prefix in CLI output |
+| `name`        | string | yes      | Displayed in the UI sidebar          |
+| `description` | string | no       | Free text; omit if not useful        |
 
 ---
 
@@ -67,11 +77,11 @@ vars:                                   # optional — key/value pairs
   timeout_ms: "5000"
 ```
 
-| Field  | Type              | Required | Notes                                             |
-|--------|-------------------|----------|---------------------------------------------------|
-| `id`   | string            | yes      | Must equal the filename stem                      |
-| `name` | string            | yes      | Shown in the environment selector                 |
-| `vars` | map[string]string | no       | All values are strings; supports `{{secret.X}}`   |
+| Field  | Type              | Required | Notes                                           |
+|--------|-------------------|----------|-------------------------------------------------|
+| `id`   | string            | yes      | Must equal the filename stem                    |
+| `name` | string            | yes      | Shown in the environment selector               |
+| `vars` | map[string]string | no       | All values are strings; supports `{{secret.X}}` |
 
 **Secret references:** A variable value of the form `{{secret.VAR_NAME}}` is resolved at runtime by reading the OS environment variable `VAR_NAME`. Secrets are never stored in the YAML files. Always use this pattern for tokens, passwords, and API keys.
 
@@ -84,9 +94,10 @@ Typical environments to create: `local`, `staging`, `production`.
 Defines a single HTTP request. Store at `requests/{group}/{name}.yaml`. The file can be nested at any depth.
 
 ```yaml
-id: users.create          # required — dot-notation, globally unique
-name: Create user         # required — human-readable label
-tags:                     # optional — for grouping/filtering
+uid: A1B2C3D4        # optional — 8-char [A-Z0-9] stable identity; auto-generated on first open
+id: users.create     # required — dot-notation, globally unique
+name: Create user    # required — human-readable label
+tags:                # optional — for grouping/filtering
   - users
   - write
 
@@ -138,6 +149,7 @@ notes: |                  # optional — free-form notes shown in the UI
 
 | Field     | Type              | Required | Notes                                                 |
 |-----------|-------------------|----------|-------------------------------------------------------|
+| `uid`     | string            | no       | 8-char `[A-Z0-9]`; omit when generating — app adds it on first open |
 | `id`      | string            | yes      | Dot-notation (`group.action`); must be unique         |
 | `name`    | string            | yes      | Shown in sidebar and Markdown export                  |
 | `tags`    | list[string]      | no       | Arbitrary tags                                        |
@@ -152,17 +164,21 @@ notes: |                  # optional — free-form notes shown in the UI
 | `redact`  | list[string]      | no       | Dot-notation paths to scrub in saved responses        |
 | `notes`   | string            | no       | Markdown-friendly free text                           |
 
+---
+
 #### Body schema
 
 ```yaml
 body:
   kind: json    # json | text | form
-  value: ...    # any YAML structure (for json/form) or a plain string (for text)
+  value: ...    # any YAML structure (for json) or a plain string (for text) or a flat map (for form)
 ```
 
-- `json` — value is serialized to JSON and sent with `Content-Type: application/json`
-- `text` — value is a plain string sent as-is
-- `form` — value is a flat map serialized as `application/x-www-form-urlencoded`
+- `json` — `value` is any YAML structure; serialized to JSON and sent with `Content-Type: application/json`
+- `text` — `value` is a plain string sent as-is
+- `form` — `value` is a flat string→string map; serialized as `application/x-www-form-urlencoded`
+
+---
 
 #### Cases
 
@@ -177,43 +193,93 @@ cases:
     user.name: "Root User"
 ```
 
+Case names are arbitrary strings. Use kebab-case. Cases layer on top of env vars; they do not replace them — only the keys listed in the case are overridden.
+
+---
+
 #### Expect schema
+
+`expect` is a flat object directly under the request key — there is no `default:` nesting.
 
 ```yaml
 expect:
-  status: 200                            # integer HTTP status code
-  time_ms: "< 500"                       # rule string (see below)
+  status: 200                            # integer HTTP status code (exact match)
+  time_ms: "< 500"                       # rule string — see time_ms rules below
   headers:
     Content-Type: "contains application/json"
+    X-Request-Id: exists
   json:
     id: exists
     email: "equals user@example.com"
     role: "contains admin"
+    "items[0].name": exists
 ```
 
-**Rule strings:**
+**`time_ms` rule strings** (applied to response duration in milliseconds):
 
-| Rule              | Meaning                              |
-|-------------------|--------------------------------------|
-| `exists`          | Field is present in the response     |
-| `equals VALUE`    | Field value equals VALUE exactly     |
-| `contains VALUE`  | Field value contains VALUE substring |
-| `< N`             | Numeric less-than (for `time_ms`)    |
-| `<= N`            | Numeric less-than-or-equal           |
+| Rule    | Meaning                       |
+|---------|-------------------------------|
+| `< N`   | duration is less than N       |
+| `<= N`  | duration is less than or equal to N |
+| `> N`   | duration is greater than N    |
+| `>= N`  | duration is greater than or equal to N |
+| `N`     | duration equals N exactly     |
 
-`headers` and `json` keys use dot-notation paths into the response. `json.id` means the `id` key at the top level of the JSON body; `json.user.email` means `response.user.email`.
+**`headers` and `json` rule strings** (applied to a string value):
+
+| Rule             | Meaning                                        |
+|------------------|------------------------------------------------|
+| `exists`         | field is present in the response               |
+| `equals VALUE`   | field value equals VALUE exactly               |
+| `contains VALUE` | field value contains VALUE as a substring      |
+| *(bare string)*  | treated as `equals <string>` — shorthand form  |
+
+**JSON path syntax** — keys in `expect.json` use dot-notation into the parsed JSON body:
+
+```
+id              → top-level field "id"
+user.email      → response.user.email
+items[0].name   → response.items[0].name
+roles[2]        → response.roles[2]
+```
+
+Array indexing uses `key[N]` within a segment. Dots separate path components.
+
+---
 
 #### Capture
 
-Saves a value from the response into a session variable so subsequent requests can reference it.
+Saves a value from the response into a session variable so subsequent requests can reference it via `{{variable_name}}`.
 
 ```yaml
 capture:
-  auth.token: json.access_token     # json.<dot.path> → reads JSON body
-  session.id: headers.X-Session-Id  # headers.<Header-Name> → reads header
+  auth.token: json.access_token        # json.<dot.path> — reads from JSON body
+  current.user_id: json.user.id        # nested JSON path
+  session.id: headers.X-Session-Id     # headers.<Header-Name> — reads response header
 ```
 
-The left-hand key becomes a session variable name usable as `{{auth.token}}` in any subsequent request run in the same session.
+Supported path prefixes:
+
+| Prefix        | Source                              |
+|---------------|-------------------------------------|
+| `json.<path>` | JSON body at dot-notation path      |
+| `headers.<name>` | Response header (case-insensitive) |
+| `header.<name>`  | Alias for `headers.<name>`         |
+
+The captured key (left-hand side) becomes a session variable name. Use any dot-notation naming you like (e.g. `auth.token`, `created_user.id`). These are available as `{{auth.token}}` in any request run in the same session.
+
+---
+
+#### Redact
+
+List of dot-notation paths to scrub before the response is saved to `.api-almanac/`. The fields are replaced with `[REDACTED]` in the stored file. This does not affect the live response display.
+
+```yaml
+redact:
+  - headers.Authorization     # scrub a request header echo
+  - json.access_token         # scrub a token from the saved body
+  - json.password             # scrub a password echo
+```
 
 ---
 
@@ -221,14 +287,14 @@ The left-hand key becomes a session variable name usable as `{{auth.token}}` in 
 
 Any string field in a request YAML may embed `{{variable_name}}` placeholders.
 
-| Syntax                | Resolved from                                          |
-|-----------------------|--------------------------------------------------------|
-| `{{base_url}}`        | Active environment's `vars` map                        |
-| `{{auth.token}}`      | Environment vars, or a session-captured value          |
-| `{{secret.VAR_NAME}}` | OS environment variable `VAR_NAME` at run time         |
-| `{{case_var}}`        | Active case overrides (override env vars)              |
+| Syntax                | Resolved from                                    |
+|-----------------------|--------------------------------------------------|
+| `{{base_url}}`        | Active environment's `vars` map                  |
+| `{{auth.token}}`      | Environment vars, or a session-captured value    |
+| `{{secret.VAR_NAME}}` | OS environment variable `VAR_NAME` at run time   |
+| `{{case_var}}`        | Active case overrides (merge over env vars)      |
 
-Resolution order: case vars → environment vars → OS env (for `{{secret.*}}`). Unresolved placeholders are left as-is.
+Resolution order (highest priority first): case vars → environment vars → OS env (for `{{secret.*}}`). Unresolved placeholders are left as-is in the final request.
 
 Variable names may contain dots (e.g. `user.email`, `created_user.id`). Dots are part of the name, not path separators in the vars map.
 
@@ -236,15 +302,16 @@ Variable names may contain dots (e.g. `user.email`, `created_user.id`). Dots are
 
 ## Naming conventions
 
-| Thing              | Convention                                          | Example                        |
-|--------------------|-----------------------------------------------------|--------------------------------|
-| Project `id`       | kebab-case slug                                     | `stripe-api`                   |
-| Environment `id`   | lowercase word or kebab-case; equals filename stem  | `local`, `staging`             |
-| Request `id`       | dot-notation: `group.action`                        | `users.create`, `auth.login`   |
-| Request filename   | kebab-case, matches the action part of the id       | `requests/users/create.yaml`   |
-| Folder grouping    | Group by API resource or feature area               | `auth/`, `users/`, `payments/` |
-| Variable names     | dot-notation; be consistent across requests         | `user.id`, `auth.token`        |
-| Secret env vars    | UPPER_SNAKE_CASE OS env var name                    | `{{secret.STRIPE_API_KEY}}`    |
+| Thing              | Convention                                         | Example                        |
+|--------------------|----------------------------------------------------|--------------------------------|
+| Project `id`       | kebab-case slug                                    | `stripe-api`                   |
+| Environment `id`   | lowercase word or kebab-case; equals filename stem | `local`, `staging`             |
+| Request `id`       | dot-notation: `group.action`                       | `users.create`, `auth.login`   |
+| Request filename   | kebab-case, matches the action part of the id      | `requests/users/create.yaml`   |
+| Folder grouping    | Group by API resource or feature area              | `auth/`, `users/`, `payments/` |
+| Variable names     | dot-notation; be consistent across requests        | `user.id`, `auth.token`        |
+| Secret env vars    | UPPER_SNAKE_CASE OS env var name                   | `{{secret.STRIPE_API_KEY}}`    |
+| Case names         | kebab-case describing the scenario                 | `happy-path`, `invalid-email`  |
 
 ---
 
@@ -309,26 +376,29 @@ Follow these steps when converting API documentation into an API Almanac project
 
 1. **Create `almanac.yaml`** — choose a slug `id` from the API name and set a `name`.
 
-2. **Create environment files** — create at least a `local.yaml`. Add `base_url` as a var. For staging/production, add those too. Never put real secrets in `vars`; use `{{secret.VAR_NAME}}` and note which OS env vars the user must set.
+2. **Create environment files** — create at least a `local.yaml`. Add `base_url` as a var pointing to the local server. For staging/production, add those too if known. Never put real secrets in `vars`; use `{{secret.VAR_NAME}}` and note which OS env vars the user must set.
 
-3. **Group requests by resource** — create one subdirectory per API resource or feature area under `requests/`. Use the resource name as the folder (e.g. `users/`, `payments/`, `webhooks/`).
+3. **Group requests by resource** — create one subdirectory per API resource or feature area under `requests/`. Use the resource name as the folder (e.g. `users/`, `payments/`, `webhooks/`). Do not add numeric prefixes — the user can reorder in the GUI.
 
 4. **Create one YAML per endpoint** — for each endpoint:
    - Set `id` as `resource.action` (e.g. `users.create`)
    - Set `method` and `url` with `{{base_url}}` prefix
    - Add all documented headers (use `{{auth.token}}` for bearer auth)
    - Add `query` params if the endpoint accepts them
-   - Add `body` with `kind: json` and the documented fields; use `{{vars}}` for any values that vary
+   - Add `body` with the appropriate `kind` and the documented fields; use `{{vars}}` for any values that vary by environment or case
    - Add `expect.status` matching the documented success code
-   - Add `expect.json` checks for documented response fields
+   - Add `expect.json` checks for key documented response fields (`exists` is sufficient for most)
    - Add `capture` for any IDs or tokens the response returns that other requests will need
    - Add `redact` for tokens and passwords
    - Add `notes` explaining prerequisites (e.g. "run auth.login first")
+   - Omit the `uid` field — the app generates it on first open
 
 5. **Wire up auth** — identify the login/token endpoint. Add `capture` to save the token. Reference `{{auth.token}}` in the `Authorization` header of every protected request.
 
-6. **Add cases for variable inputs** — if an endpoint behaves differently based on role, plan, or status, add a `cases` block with named scenarios.
+6. **Add cases for variable inputs** — if an endpoint behaves differently based on role, plan, or status, add a `cases` block with named scenarios. Each case only needs to list the variables that differ from the defaults.
 
 7. **Use `{{secret.*}}` for all credentials** — passwords, API keys, and tokens must never appear as plain-text values in any YAML file.
 
 8. **Verify ids are unique** — every request YAML in the project must have a unique `id`. Check before finishing.
+
+9. **Verify `expect` is flat** — the `expect` field is a direct object with `status`, `time_ms`, `headers`, and `json` keys. Do not nest it under `default:` or any other key.

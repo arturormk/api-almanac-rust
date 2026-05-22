@@ -10,17 +10,27 @@ API Almanac is a free, open-source desktop app that turns exploratory HTTP calls
 
 ## Features
 
-- **Request editor** — method, URL, query params, headers, body (JSON / form / text), cases
+- **Request editor** — method, URL, query params, headers, body (JSON / form / text)
+- **Cases** — named variable overrides per request (e.g. `valid-user`, `invalid-email`); select a case at run time or cycle through all in a spot-check
 - **Environment system** — named variable sets (`local`, `staging`, `production`) with `{{double_braces}}` template syntax; secrets read from OS environment variables at runtime via `{{secret.VAR_NAME}}`
+- **Expectations** — lightweight assertions on status code, response time, headers, and JSON fields; configure directly in the GUI and view pass/fail after every run
+- **Captures** — extract values from responses (JSON paths, headers) into named session variables for use in subsequent requests; live preview of captured values in the editor
 - **Response viewer** — pretty-printed JSON, headers, status badge, duration
+- **Checks panel** — inline pass/fail summary shown after every project request run, with expected vs. actual values
 - **TypeSketch** — automatically infers the observed response shape as a readable YAML sketch
-- **Expectations & captures** — lightweight assertions on status, headers, and JSON fields; capture values from responses for use in subsequent requests
 - **Notes** — per-request freeform notes saved to YAML and included in Markdown exports
 - **Spot-check runner** — run all project requests in sequence, carry captured values forward, export a Markdown report
 - **Markdown export** — generate a readable Markdown notebook for any request: definition, cases, expectations, last response, and type sketch
 - **Response persistence** — saves the last response per request to `.api-almanac/`; shows it automatically when you reopen a request
 - **Analyzer plugins** — run any external executable against the current response; receive HTML / YAML / Markdown artifacts back. Plugins can be written in any language.
 - **CLI** — `almanac` binary for `list`, `run`, `spot-check`, `sketch`, and `export-md` without opening the GUI
+
+### Sidebar and project management
+
+- **Folder groups** — create, rename, and delete request groups; move requests between groups
+- **Drag-and-drop reordering** — reorder both groups and requests within groups
+- **Duplicate request** — right-click any request to clone it with a single action
+- **Recent projects** — quickly reopen recently used projects from the sidebar
 
 ### Local-first and Git-friendly
 
@@ -166,11 +176,11 @@ query:
   include: profile
 
 expect:
-  default:
-    status: 200
-    json:
-      id: exists
-      email: exists
+  status: 200
+  time_ms: "< 500"
+  json:
+    id: exists
+    email: exists
 
 capture:
   last_user.id: json.id
@@ -182,6 +192,27 @@ notes: |
   Run auth.login first to populate auth.token in the session.
   The returned user ID is captured as last_user.id.
 ```
+
+#### Expectation rules
+
+| Field | Example values |
+|---|---|
+| `status` | `200`, `404` |
+| `time_ms` | `"< 500"`, `"<= 1000"`, `">= 100"` |
+| `headers.*` | `"exists"`, `"equals application/json"`, `"contains json"` |
+| `json.*` | `"exists"`, `"equals ada@example.com"`, `"contains admin"` |
+
+JSON paths support dot notation and array indexing: `json.user.roles[0]`.
+
+#### Cases
+
+```yaml
+cases:
+  invalid-email:
+    user_id: "not-a-valid-id"
+```
+
+Cases override template variables at run time. Select a case from the dropdown in the GUI, or pass `--case` to the CLI.
 
 ---
 
