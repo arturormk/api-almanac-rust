@@ -6,6 +6,9 @@ API Almanac is a free, open-source desktop app that turns exploratory HTTP calls
 
 > API Almanac is not an enterprise API platform. It is a developer's field notebook for APIs, with executable requests and response archaeology.
 
+
+![Screenshot](docs/images/screenshot.jpg)
+
 ---
 
 ## Features
