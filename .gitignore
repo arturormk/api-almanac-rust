@@ -17,3 +17,6 @@ src-tauri/gen/
 # OS
 .DS_Store
 Thumbs.db
+
+# API Almanac runtime data
+.api-almanac/

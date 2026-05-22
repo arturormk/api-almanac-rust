@@ -1,0 +1,4 @@
+id: default
+name: Default
+vars:
+  base_url: https://api.open-meteo.com/v1

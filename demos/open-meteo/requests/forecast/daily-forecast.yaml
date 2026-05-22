@@ -1,0 +1,29 @@
+uid: YM1AQ4O8
+id: forecast.daily-forecast
+name: Daily Forecast (7 days)
+tags:
+  - forecast
+method: GET
+url: "{{base_url}}/forecast"
+query:
+  latitude: "40.4168"
+  longitude: "-3.7038"
+  daily: temperature_2m_max,temperature_2m_min,precipitation_sum,sunrise,sunset,weather_code
+  timezone: Europe/Madrid
+cases:
+  london:
+    latitude: "51.5074"
+    longitude: "-0.1278"
+  new-york:
+    latitude: "40.7128"
+    longitude: "-74.0060"
+expect:
+  status: 200
+  time_ms: "< 3000"
+  json:
+    daily.time: exists
+    daily.temperature_2m_max: exists
+    daily.sunrise: exists
+notes: >
+  Returns 7-day daily aggregates: max/min temperature, total precipitation, sunrise and sunset times.
+  Set forecast_days (up to 16) or add uv_index_max, wind_speed_10m_max to the daily param.

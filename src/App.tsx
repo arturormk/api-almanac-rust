@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   DndContext,
@@ -23,7 +23,7 @@ import "./App.css";
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
 type BodyKind = "none" | "json" | "text" | "form";
 type RequestTab = "params" | "headers" | "body" | "cases" | "notes" | "captures" | "expects";
-type ResponseTab = "body" | "headers" | "sketch" | "tools";
+type ResponseTab = "curl" | "body" | "headers" | "sketch" | "tools";
 
 interface KvRow {
   id: number;
@@ -1722,6 +1722,28 @@ function SessionBar({
 // ── App ────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  // Sidebar resize
+  const [sidebarWidth, setSidebarWidth] = useState(220);
+  const [isResizing, setIsResizing] = useState(false);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    setIsResizing(true);
+    const onMouseMove = (ev: MouseEvent) => {
+      const newWidth = Math.max(150, Math.min(480, startWidth + ev.clientX - startX));
+      setSidebarWidth(newWidth);
+    };
+    const onMouseUp = () => {
+      setIsResizing(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [sidebarWidth]);
+
   // Project
   const [project, setProject] = useState<ProjectData | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
@@ -1785,6 +1807,27 @@ export default function App() {
   const activeRows = (rows: KvRow[]) => rows.filter((r) => r.enabled && r.key.trim());
   const toMap = (rows: KvRow[]) =>
     Object.fromEntries(activeRows(rows).map((r) => [r.key, r.value]));
+
+  function buildCurlCommand(
+    m: string,
+    url: string,
+    headers: KvRow[],
+    bKind: BodyKind,
+    bContent: string
+  ): string {
+    const parts: string[] = [`curl -X ${m} '${url}'`];
+    const active = headers.filter((r) => r.enabled && r.key.trim());
+    const hasContentType = active.some((r) => r.key.toLowerCase() === "content-type");
+    if (bKind === "json" && !hasContentType)
+      parts.push(`  -H 'Content-Type: application/json'`);
+    else if (bKind === "form" && !hasContentType)
+      parts.push(`  -H 'Content-Type: application/x-www-form-urlencoded'`);
+    for (const r of active)
+      parts.push(`  -H '${r.key}: ${r.value}'`);
+    if (bKind !== "none" && bContent.trim())
+      parts.push(`  --data-raw '${bContent.replace(/'/g, "'\\''")}'`);
+    return parts.join(" \\\n");
+  }
 
   function markDirty() { setIsDirty(true); setSaveStatus("idle"); }
 
@@ -1899,7 +1942,9 @@ export default function App() {
     try {
       const data = await invoke<ProjectData>("open_project");
       const storedEnv = localStorage.getItem(`almanac.lastEnv.${data.id}`);
-      const restoredEnvId = (storedEnv && data.environments.some(e => e.id === storedEnv)) ? storedEnv : null;
+      const restoredEnvId = (storedEnv && data.environments.some(e => e.id === storedEnv))
+        ? storedEnv
+        : (data.environments[0]?.id ?? null);
       setProject(data); setSelectedEnvId(restoredEnvId); resetToAdhoc();
       await reloadPlugins();
       await loadRecentProjects();
@@ -1923,7 +1968,9 @@ export default function App() {
     try {
       const data = await invoke<ProjectData>("open_recent_project", { path });
       const storedEnv = localStorage.getItem(`almanac.lastEnv.${data.id}`);
-      const restoredEnvId = (storedEnv && data.environments.some(e => e.id === storedEnv)) ? storedEnv : null;
+      const restoredEnvId = (storedEnv && data.environments.some(e => e.id === storedEnv))
+        ? storedEnv
+        : (data.environments[0]?.id ?? null);
       setProject(data); setSelectedEnvId(restoredEnvId); resetToAdhoc();
       await reloadPlugins();
       await loadRecentProjects();
@@ -2214,7 +2261,11 @@ export default function App() {
   ].filter(Boolean).join(" ");
 
   return (
-    <div className="app" onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && send()}>
+    <div
+      className={`app${isResizing ? ' sidebar-resizing' : ''}`}
+      style={{ gridTemplateColumns: `${sidebarWidth}px 4px 1fr` }}
+      onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && send()}
+    >
       <header className="toolbar">
         <span className="app-name">API Almanac</span>
       </header>
@@ -2249,6 +2300,11 @@ export default function App() {
         onDuplicateRequest={duplicateProjectRequest}
         onReorderRequest={reorderRequest}
         onReorderGroup={reorderGroup}
+      />
+
+      <div
+        className={`sidebar-resize-handle${isResizing ? ' resizing' : ''}`}
+        onMouseDown={handleResizeStart}
       />
 
       <div className="main-area">
@@ -2603,6 +2659,7 @@ export default function App() {
               <ChecksPanel checks={lastChecks} captured={lastCaptured} />
               <div className="tab-bar">
                 {([
+                  "curl",
                   "body",
                   "headers",
                   ...(sketchYaml ? ["sketch" as ResponseTab] : []),
@@ -2624,6 +2681,25 @@ export default function App() {
                 ))}
               </div>
               <div className="tab-content response-content">
+                {resTab === "curl" && (
+                  <div className="sketch-pane">
+                    <div className="sketch-actions">
+                      <button
+                        className="sketch-btn"
+                        onClick={() =>
+                          navigator.clipboard.writeText(
+                            buildCurlCommand(method, response.url, reqHeaders, bodyKind, bodyContent)
+                          )
+                        }
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <pre className="sketch-yaml">
+                      {buildCurlCommand(method, response.url, reqHeaders, bodyKind, bodyContent)}
+                    </pre>
+                  </div>
+                )}
                 {resTab === "body" && (
                   <PrettyBody body={response.body} contentType={response.headers["content-type"]} />
                 )}

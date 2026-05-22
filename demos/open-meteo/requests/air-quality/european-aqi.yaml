@@ -1,0 +1,29 @@
+uid: DA8DESYL
+id: air-quality.european-aqi
+name: Air Quality — European AQI
+tags:
+  - air-quality
+method: GET
+url: https://air-quality-api.open-meteo.com/v1/air-quality
+query:
+  latitude: "40.4168"
+  longitude: "-3.7038"
+  current: european_aqi,pm10,pm2_5
+  hourly: european_aqi,pm10,pm2_5
+  timezone: Europe/Madrid
+cases:
+  paris:
+    latitude: "48.8566"
+    longitude: "2.3522"
+  berlin:
+    latitude: "52.5200"
+    longitude: "13.4050"
+expect:
+  status: 200
+  time_ms: "< 3000"
+  json:
+    current.european_aqi: exists
+    hourly.pm10: exists
+notes: >
+  Returns the European Air Quality Index plus PM10 and PM2.5 particulate matter for Madrid.
+  Switch to the paris or berlin case to compare air quality across European cities.

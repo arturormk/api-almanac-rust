@@ -1,0 +1,30 @@
+uid: F1KJXKUJ
+id: forecast.hourly-forecast
+name: Hourly Forecast (48 h)
+tags:
+  - forecast
+method: GET
+url: "{{base_url}}/forecast"
+query:
+  latitude: "40.4168"
+  longitude: "-3.7038"
+  hourly: temperature_2m,precipitation_probability,precipitation,weather_code
+  forecast_days: "2"
+  timezone: Europe/Madrid
+cases:
+  london:
+    latitude: "51.5074"
+    longitude: "-0.1278"
+  new-york:
+    latitude: "40.7128"
+    longitude: "-74.0060"
+expect:
+  status: 200
+  time_ms: "< 3000"
+  json:
+    hourly.time: exists
+    hourly.temperature_2m: exists
+    hourly.precipitation: exists
+notes: >
+  Returns hourly temperature and precipitation data for the next 48 hours.
+  Increase forecast_days up to 16, or add variables like wind_speed_10m or shortwave_radiation.

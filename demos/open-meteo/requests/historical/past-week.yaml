@@ -1,0 +1,23 @@
+uid: JW0XVBD5
+id: historical.past-week
+name: Historical — Past Week
+tags:
+  - historical
+method: GET
+url: https://archive-api.open-meteo.com/v1/archive
+query:
+  latitude: "40.4168"
+  longitude: "-3.7038"
+  start_date: "2026-05-12"
+  end_date: "2026-05-18"
+  hourly: temperature_2m,precipitation,wind_speed_10m
+  timezone: Europe/Madrid
+expect:
+  status: 200
+  time_ms: "< 3000"
+  json:
+    hourly.time: exists
+    hourly.temperature_2m: exists
+notes: >
+  Fetches ERA5 reanalysis data for Madrid from 2026-05-12 to 2026-05-18.
+  Adjust start_date and end_date for any range going back to 1940; add daily variables by appending a daily param.

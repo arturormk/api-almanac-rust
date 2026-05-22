@@ -397,9 +397,27 @@ async fn run_project_request(
         let session = state.session_vars.lock().unwrap();
         vars.extend(session.clone());
     }
-    let resolved = VariableResolver::from_vars(vars)
+    let mut resolved = VariableResolver::from_vars(vars)
         .resolve_request(&entry.request)
         .map_err(|e| e.to_string())?;
+
+    if resolved.url.contains("{{") {
+        let token = resolved.url
+            .split("{{").nth(1)
+            .and_then(|s| s.split("}}").next())
+            .unwrap_or("unknown");
+        return Err(format!("URL contains unresolved variable {{{{{}}}}} — select an environment", token));
+    }
+
+    // Case vars directly override matching query params when the request uses literal values
+    // rather than {{template}} syntax — template substitution alone doesn't handle that case.
+    if let Some(c) = case {
+        for (key, value) in c {
+            if resolved.query.contains_key(key.as_str()) {
+                resolved.query.insert(key.clone(), value.clone());
+            }
+        }
+    }
 
     let response = Runner::new().run(&resolved).await.map_err(|e| e.to_string())?;
 

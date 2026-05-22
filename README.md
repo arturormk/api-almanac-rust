@@ -114,6 +114,39 @@ The CLI walks up from the current directory to find `almanac.yaml`. Request argu
 
 ---
 
+## Demo project: Open-Meteo weather API
+
+The repository ships a ready-to-open example at `demos/open-meteo/`. It covers the [Open-Meteo](https://open-meteo.com) free weather API — no key or account required — with five requests across three endpoint families:
+
+| Group | Request | What it does |
+|---|---|---|
+| `forecast` | Current Weather | Real-time temperature, wind speed, and weather code |
+| `forecast` | Hourly Forecast (48 h) | Hour-by-hour temperature and precipitation for 2 days |
+| `forecast` | Daily Forecast (7 days) | Sunrise/sunset, precipitation totals, and min/max temperature |
+| `historical` | Past Week | Archived daily data for the last 7 days |
+| `air-quality` | European AQI | PM10, PM2.5, and European Air Quality Index |
+
+Open the project via **File → Open Project** and navigate to `demos/open-meteo/`. The `Default` environment is selected automatically; all five requests run immediately.
+
+### How this demo was generated
+
+This project was created entirely by an AI agent given two inputs:
+
+1. The API Almanac project format (CLAUDE.md + the model crate structs)
+2. A one-shot task prompt ([`demos/open-meteo/PROMPT.md`](demos/open-meteo/PROMPT.md))
+
+The prompt instructed the agent to fetch the Open-Meteo documentation, read the YAML schema from the source, and emit a complete project tree — `almanac.yaml`, one environment file, and five request files with realistic defaults, cases, expectations, and notes. No hand-editing was needed after generation.
+
+This is the intended workflow for bootstrapping any new API project with API Almanac:
+
+1. Copy `PROMPT.md` and adapt it for your target API (point it at the right docs URL, list the endpoint families you care about).
+2. Run the prompt against an AI agent that has access to the repo (e.g. Claude Code with the repo open).
+3. Open the generated folder in API Almanac and start running requests.
+
+The agent reads the canonical struct definitions directly from the source, so the generated YAML is always schema-valid. Secrets stay out of files because the prompt explicitly tells the agent to use `{{secret.VAR_NAME}}` references instead of literal values.
+
+---
+
 ## Project structure
 
 ```
