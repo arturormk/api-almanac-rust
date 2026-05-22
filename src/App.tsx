@@ -63,6 +63,12 @@ interface ProjectData {
   description?: string;
   requests: RequestSummary[];
   environments: EnvSummary[];
+  folders: string[];
+}
+
+interface MoveResult {
+  new_file_path: string;
+  project: ProjectData;
 }
 
 interface RecentProject {
@@ -718,7 +724,49 @@ function EnvironmentPanel({
   );
 }
 
+// ── Sidebar tree types & builder ───────────────────────────────────────────
+
+type TreeItem =
+  | { kind: "folder"; path: string; label: string; children: TreeItem[] }
+  | { kind: "request"; req: RequestSummary };
+
+function buildTree(
+  allFolders: string[],
+  requests: RequestSummary[],
+  parentPath: string = ""
+): TreeItem[] {
+  const levelReqs = requests
+    .filter((r) => r.folder === parentPath)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const directChildren = allFolders
+    .filter((f) => {
+      if (parentPath === "") return !f.includes("/");
+      const prefix = parentPath + "/";
+      return f.startsWith(prefix) && !f.slice(prefix.length).includes("/");
+    })
+    .sort();
+
+  return [
+    ...levelReqs.map((req) => ({ kind: "request" as const, req })),
+    ...directChildren.map((folder) => ({
+      kind: "folder" as const,
+      path: folder,
+      label: parentPath ? folder.slice(parentPath.length + 1) : folder,
+      children: buildTree(allFolders, requests, folder),
+    })),
+  ];
+}
+
 // ── Sidebar ────────────────────────────────────────────────────────────────
+
+type CtxMenu =
+  | { kind: "folder"; path: string; x: number; y: number }
+  | { kind: "request"; filePath: string; reqName: string; x: number; y: number };
+
+type Renaming =
+  | { kind: "folder"; path: string; value: string }
+  | { kind: "request"; filePath: string; value: string };
 
 function truncatePath(p: string): string {
   const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
@@ -735,10 +783,17 @@ function Sidebar({
   onOpenProject,
   onOpenRecent,
   onAddRequest,
+  onAddRequestToFolder,
   onSelectRequest,
   onEnvChange,
   onRunChecks,
   onEditEnvs,
+  onCreateGroup,
+  onRenameGroup,
+  onDeleteGroup,
+  onRenameRequest,
+  onDeleteRequest,
+  onMoveRequest,
 }: {
   project: ProjectData | null;
   selectedFilePath: string | null;
@@ -748,36 +803,197 @@ function Sidebar({
   onOpenProject: () => void;
   onOpenRecent: (path: string) => void;
   onAddRequest: () => void;
+  onAddRequestToFolder: (folder: string) => void;
   onSelectRequest: (filePath: string) => void;
   onEnvChange: (envId: string | null) => void;
   onRunChecks: () => void;
   onEditEnvs: () => void;
+  onCreateGroup: (folder: string) => void;
+  onRenameGroup: (oldFolder: string, newFolder: string) => void;
+  onDeleteGroup: (folder: string) => void;
+  onRenameRequest: (filePath: string, newName: string) => void;
+  onDeleteRequest: (filePath: string) => void;
+  onMoveRequest: (filePath: string, newFolder: string) => void;
 }) {
   const [showRecentMenu, setShowRecentMenu] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
+  const [renaming, setRenaming] = useState<Renaming | null>(null);
+  const [moving, setMoving] = useState<{ filePath: string; x: number; y: number } | null>(null);
+  const [newGroup, setNewGroup] = useState<{ parentPath: string; value: string } | null>(null);
+
   const recentWrapRef = useRef<HTMLDivElement>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
+  const movingRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!showRecentMenu) return;
-    function handleClick(e: MouseEvent) {
+    function handle(e: MouseEvent) {
       if (recentWrapRef.current && !recentWrapRef.current.contains(e.target as Node)) {
         setShowRecentMenu(false);
       }
     }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
   }, [showRecentMenu]);
-  const folders = new Map<string, RequestSummary[]>();
-  if (project) {
-    for (const req of project.requests) {
-      const folder = req.folder || "";
-      if (!folders.has(folder)) folders.set(folder, []);
-      folders.get(folder)!.push(req);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    function handle(e: MouseEvent) {
+      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) {
+        setCtxMenu(null);
+      }
     }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [ctxMenu]);
+
+  useEffect(() => {
+    if (!moving) return;
+    function handle(e: MouseEvent) {
+      if (movingRef.current && !movingRef.current.contains(e.target as Node)) {
+        setMoving(null);
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [moving]);
+
+  const allFolders = project?.folders ?? [];
+  const tree = project ? buildTree(allFolders, project.requests) : [];
+
+  function renderItems(items: TreeItem[], depth: number): React.ReactNode {
+    return items.map((item) => {
+      if (item.kind === "request") {
+        const req = item.req;
+        const isActive = selectedFilePath === req.file_path;
+        const isRenamingThis =
+          renaming?.kind === "request" && renaming.filePath === req.file_path;
+        return (
+          <div
+            key={req.file_path}
+            className={`sidebar-req${isActive ? " sidebar-req-active" : ""}`}
+            style={{ paddingLeft: depth * 12 }}
+          >
+            <div
+              className="sidebar-req-main"
+              onClick={() => !isRenamingThis && onSelectRequest(req.file_path)}
+            >
+              <MethodBadge method={req.method} />
+              {isRenamingThis ? (
+                <input
+                  className="rename-input"
+                  value={renaming.value}
+                  autoFocus
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) =>
+                    setRenaming({ kind: "request", filePath: req.file_path, value: e.target.value })
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && renaming.value.trim()) {
+                      onRenameRequest(req.file_path, renaming.value.trim());
+                      setRenaming(null);
+                    } else if (e.key === "Escape") {
+                      setRenaming(null);
+                    }
+                  }}
+                  onBlur={() => setRenaming(null)}
+                />
+              ) : (
+                <span className="sidebar-req-name">{req.name}</span>
+              )}
+            </div>
+            <button
+              className="sidebar-more-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setCtxMenu({
+                  kind: "request",
+                  filePath: req.file_path,
+                  reqName: req.name,
+                  x: e.clientX,
+                  y: e.clientY,
+                });
+              }}
+              title="Options"
+            >
+              ⋮
+            </button>
+          </div>
+        );
+      }
+
+      // Folder
+      const isRenamingThis =
+        renaming?.kind === "folder" && renaming.path === item.path;
+      const isAddingSubfolder = newGroup?.parentPath === item.path;
+
+      return (
+        <div key={item.path} className="sidebar-folder">
+          <div className="sidebar-folder-row" style={{ paddingLeft: depth * 12 }}>
+            {isRenamingThis ? (
+              <input
+                className="rename-input rename-input-folder"
+                value={renaming.value}
+                autoFocus
+                onChange={(e) =>
+                  setRenaming({ kind: "folder", path: item.path, value: e.target.value })
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && renaming.value.trim()) {
+                    const parentSegment = item.path.includes("/")
+                      ? item.path.slice(0, item.path.lastIndexOf("/") + 1)
+                      : "";
+                    onRenameGroup(item.path, parentSegment + renaming.value.trim());
+                    setRenaming(null);
+                  } else if (e.key === "Escape") {
+                    setRenaming(null);
+                  }
+                }}
+                onBlur={() => setRenaming(null)}
+              />
+            ) : (
+              <span className="sidebar-folder-name">{item.label}</span>
+            )}
+            <button
+              className="sidebar-more-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setCtxMenu({ kind: "folder", path: item.path, x: e.clientX, y: e.clientY });
+              }}
+              title="Folder options"
+            >
+              ⋮
+            </button>
+          </div>
+          <div className="sidebar-folder-children">
+            {renderItems(item.children, depth + 1)}
+            {isAddingSubfolder && (
+              <div className="new-group-input-row" style={{ paddingLeft: (depth + 1) * 12 }}>
+                <input
+                  className="rename-input"
+                  placeholder="subfolder-name"
+                  value={newGroup!.value}
+                  autoFocus
+                  onChange={(e) =>
+                    setNewGroup({ parentPath: item.path, value: e.target.value })
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newGroup!.value.trim()) {
+                      onCreateGroup(item.path + "/" + newGroup!.value.trim());
+                      setNewGroup(null);
+                    } else if (e.key === "Escape") {
+                      setNewGroup(null);
+                    }
+                  }}
+                  onBlur={() => setNewGroup(null)}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    });
   }
-  const sortedFolders = Array.from(folders.entries()).sort(([a], [b]) => {
-    if (a === "") return -1;
-    if (b === "") return 1;
-    return a.localeCompare(b);
-  });
 
   return (
     <div className="sidebar">
@@ -833,33 +1049,159 @@ function Sidebar({
 
       <div className="sidebar-tree">
         {project ? (
-          sortedFolders.length > 0 ? (
-            sortedFolders.map(([folder, reqs]) => (
-              <div key={folder || "__root__"} className="sidebar-folder">
-                {folder && <div className="sidebar-folder-name">{folder}</div>}
-                {reqs.map((req) => (
-                  <button
-                    key={req.file_path}
-                    className={`sidebar-req${selectedFilePath === req.file_path ? " sidebar-req-active" : ""}`}
-                    onClick={() => onSelectRequest(req.file_path)}
-                  >
-                    <MethodBadge method={req.method} />
-                    <span className="sidebar-req-name">{req.name}</span>
-                  </button>
-                ))}
+          <>
+            {renderItems(tree, 0)}
+            {newGroup?.parentPath === "" && (
+              <div className="new-group-input-row">
+                <input
+                  className="rename-input"
+                  placeholder="folder or parent/child"
+                  value={newGroup.value}
+                  autoFocus
+                  onChange={(e) => setNewGroup({ parentPath: "", value: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newGroup.value.trim()) {
+                      onCreateGroup(newGroup.value.trim());
+                      setNewGroup(null);
+                    } else if (e.key === "Escape") {
+                      setNewGroup(null);
+                    }
+                  }}
+                  onBlur={() => setNewGroup(null)}
+                />
               </div>
-            ))
-          ) : (
-            <p className="sidebar-empty">No requests yet.</p>
-          )
+            )}
+            {tree.length === 0 && !newGroup && (
+              <p className="sidebar-empty">No requests yet.</p>
+            )}
+          </>
         ) : (
           <p className="sidebar-empty">Open or create a project to get started.</p>
         )}
       </div>
 
+      {/* Context menu */}
+      {ctxMenu && (
+        <div
+          ref={ctxMenuRef}
+          className="context-menu"
+          style={{ top: ctxMenu.y, left: ctxMenu.x }}
+        >
+          {ctxMenu.kind === "folder" ? (
+            <>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  const label = ctxMenu.path.includes("/")
+                    ? ctxMenu.path.slice(ctxMenu.path.lastIndexOf("/") + 1)
+                    : ctxMenu.path;
+                  setRenaming({ kind: "folder", path: ctxMenu.path, value: label });
+                  setCtxMenu(null);
+                }}
+              >
+                Rename
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setNewGroup({ parentPath: ctxMenu.path, value: "" });
+                  setCtxMenu(null);
+                }}
+              >
+                Add Subfolder
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  onAddRequestToFolder(ctxMenu.path);
+                  setCtxMenu(null);
+                }}
+              >
+                Add Request Here
+              </button>
+              <div className="context-menu-sep" />
+              <button
+                className="context-menu-item context-menu-danger"
+                onClick={() => {
+                  const p = ctxMenu.path;
+                  setCtxMenu(null);
+                  onDeleteGroup(p);
+                }}
+              >
+                Delete Group
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setRenaming({ kind: "request", filePath: ctxMenu.filePath, value: ctxMenu.reqName });
+                  setCtxMenu(null);
+                }}
+              >
+                Rename
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setMoving({ filePath: ctxMenu.filePath, x: ctxMenu.x, y: ctxMenu.y });
+                  setCtxMenu(null);
+                }}
+              >
+                Move to...
+              </button>
+              <div className="context-menu-sep" />
+              <button
+                className="context-menu-item context-menu-danger"
+                onClick={() => {
+                  const fp = ctxMenu.filePath;
+                  setCtxMenu(null);
+                  onDeleteRequest(fp);
+                }}
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Move picker */}
+      {moving && (
+        <div
+          ref={movingRef}
+          className="move-picker"
+          style={{ top: moving.y, left: moving.x }}
+        >
+          <div className="move-picker-title">Move to</div>
+          <button
+            className="move-picker-item"
+            onClick={() => { onMoveRequest(moving.filePath, ""); setMoving(null); }}
+          >
+            Root (top level)
+          </button>
+          {allFolders.map((f) => (
+            <button
+              key={f}
+              className="move-picker-item"
+              onClick={() => { onMoveRequest(moving.filePath, f); setMoving(null); }}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+      )}
+
       {project && (
         <div className="sidebar-footer">
           <button className="sidebar-add-req-btn" onClick={onAddRequest}>+ Add Request</button>
+          <button
+            className="sidebar-add-req-btn"
+            onClick={() => setNewGroup({ parentPath: "", value: "" })}
+          >
+            + New Group
+          </button>
           <button className="sidebar-checks-btn" onClick={onRunChecks}>Run Checks</button>
           <button className="sidebar-env-edit-btn" onClick={onEditEnvs}>Edit Envs</button>
         </div>
@@ -1092,6 +1434,87 @@ export default function App() {
     setPluginResults({}); setPluginLoading({});
   }
 
+  function addNewRequestToFolder(folder: string) {
+    setSelectedFilePath(null); setIsNewRequest(true);
+    setNewReqDisplayName(""); setNewReqFolder(folder);
+    setMethod("GET"); setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]);
+    setBodyKind("none"); setBodyContent(""); setNotes("");
+    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null);
+    setIsDirty(false); setSaveStatus("idle");
+    setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
+    setLastChecks([]); setLastCaptured({});
+    setPluginResults({}); setPluginLoading({});
+  }
+
+  // ── Group & request management ────────────────────────────────────────────
+
+  async function createGroup(folder: string) {
+    if (!folder.trim()) return;
+    try {
+      const data = await invoke<ProjectData>("create_group", { folder: folder.trim() });
+      setProject(data);
+    } catch (e) { setReqError(String(e)); }
+  }
+
+  async function renameGroup(oldFolder: string, newFolder: string) {
+    const nf = newFolder.trim();
+    if (!nf || oldFolder === nf) return;
+    try {
+      const data = await invoke<ProjectData>("rename_group", { oldFolder, newFolder: nf });
+      setProject(data);
+      if (selectedFilePath?.startsWith("requests/" + oldFolder + "/")) {
+        setSelectedFilePath(
+          selectedFilePath.replace("requests/" + oldFolder + "/", "requests/" + nf + "/")
+        );
+      }
+    } catch (e) { setReqError(String(e)); }
+  }
+
+  async function deleteGroup(folder: string) {
+    const reqs = project?.requests.filter(
+      (r) => r.folder === folder || r.folder.startsWith(folder + "/")
+    ) ?? [];
+    const msg =
+      reqs.length > 0
+        ? `Delete group "${folder}" and ${reqs.length} request${reqs.length !== 1 ? "s" : ""} inside?`
+        : `Delete group "${folder}"?`;
+    if (!window.confirm(msg)) return;
+    const wasInsideGroup = selectedFilePath?.startsWith("requests/" + folder + "/") ?? false;
+    try {
+      const data = await invoke<ProjectData>("delete_group", { folder });
+      setProject(data);
+      if (wasInsideGroup) resetToAdhoc();
+    } catch (e) { setReqError(String(e)); }
+  }
+
+  async function renameRequestName(filePath: string, newName: string) {
+    if (!newName.trim()) return;
+    try {
+      const data = await invoke<ProjectData>("rename_request", { filePath, newName: newName.trim() });
+      setProject(data);
+      if (selectedFilePath === filePath) setReqName(newName.trim());
+    } catch (e) { setReqError(String(e)); }
+  }
+
+  async function deleteProjectRequest(filePath: string) {
+    const req = project?.requests.find((r) => r.file_path === filePath);
+    const displayName = req?.name ?? filePath;
+    if (!window.confirm(`Delete request "${displayName}"?`)) return;
+    try {
+      const data = await invoke<ProjectData>("delete_request", { filePath });
+      setProject(data);
+      if (selectedFilePath === filePath) resetToAdhoc();
+    } catch (e) { setReqError(String(e)); }
+  }
+
+  async function moveProjectRequest(filePath: string, newFolder: string) {
+    try {
+      const result = await invoke<MoveResult>("move_request", { filePath, newFolder });
+      setProject(result.project);
+      if (selectedFilePath === filePath) setSelectedFilePath(result.new_file_path);
+    } catch (e) { setReqError(String(e)); }
+  }
+
   async function selectRequest(filePath: string) {
     setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setIsNewRequest(false);
     setLastChecks([]); setLastCaptured({});
@@ -1253,10 +1676,17 @@ export default function App() {
         onOpenProject={openProject}
         onOpenRecent={openRecentProject}
         onAddRequest={addNewRequest}
+        onAddRequestToFolder={addNewRequestToFolder}
         onSelectRequest={selectRequest}
         onEnvChange={setSelectedEnvId}
         onRunChecks={() => { setShowSpotCheck(true); setShowEnvEditor(false); setSelectedFilePath(null); setIsNewRequest(false); }}
         onEditEnvs={() => { setShowEnvEditor(true); setShowSpotCheck(false); setSelectedFilePath(null); setIsNewRequest(false); }}
+        onCreateGroup={createGroup}
+        onRenameGroup={renameGroup}
+        onDeleteGroup={deleteGroup}
+        onRenameRequest={renameRequestName}
+        onDeleteRequest={deleteProjectRequest}
+        onMoveRequest={moveProjectRequest}
       />
 
       <div className="main-area">

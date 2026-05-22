@@ -79,6 +79,12 @@ Request arguments accept either a file path (`requests/auth/login.yaml`) or a re
 | `delete_environment(env_id)` | Remove env file, returns updated `ProjectData` |
 | `list_plugins()` | List plugin manifests from `tools/*.yaml` in the open project |
 | `run_plugin_command(plugin_id, file_path, response_*)` | Run a plugin against the current response; returns `PluginOutput` |
+| `create_group(folder)` | Create directory `requests/{folder}` with `.gitkeep`; returns updated `ProjectData` |
+| `rename_group(old_folder, new_folder)` | Rename request directory; returns updated `ProjectData` |
+| `delete_group(folder)` | Remove request directory and all contents; returns updated `ProjectData` |
+| `delete_request(file_path)` | Delete a request YAML file; returns updated `ProjectData` |
+| `rename_request(file_path, new_name)` | Update `name:` field in YAML (file name and `id` unchanged); returns updated `ProjectData` |
+| `move_request(file_path, new_folder)` | Move YAML file to different folder; returns `MoveResult { new_file_path, project }` |
 
 ## AppState
 

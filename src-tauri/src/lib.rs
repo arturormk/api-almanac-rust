@@ -9,7 +9,7 @@ use api_almanac_model::{
 use api_almanac_runner::{apply_captures, run_checks, Check, HttpResponse, Runner};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -30,6 +30,13 @@ pub struct ProjectData {
     pub description: Option<String>,
     pub requests: Vec<RequestSummary>,
     pub environments: Vec<EnvSummary>,
+    pub folders: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct MoveResult {
+    pub new_file_path: String,
+    pub project: ProjectData,
 }
 
 #[derive(Serialize)]
@@ -131,6 +138,7 @@ fn load_project_data(loader: &ProjectLoader) -> Result<ProjectData, String> {
     let project = loader.load_project().map_err(|e| e.to_string())?;
     let requests = loader.load_requests().map_err(|e| e.to_string())?;
     let environments = loader.load_environments().map_err(|e| e.to_string())?;
+    let folders = loader.list_folders().map_err(|e| e.to_string())?;
     Ok(ProjectData {
         name: project.name,
         id: project.id,
@@ -149,6 +157,7 @@ fn load_project_data(loader: &ProjectLoader) -> Result<ProjectData, String> {
             .into_iter()
             .map(|env| EnvSummary { id: env.id, name: env.name })
             .collect(),
+        folders,
     })
 }
 
@@ -759,6 +768,72 @@ fn slugify(s: &str) -> String {
     if slug.is_empty() { "env".to_string() } else { slug }
 }
 
+// ── Group & request management commands ───────────────────────────────────
+
+#[tauri::command]
+fn create_group(state: State<'_, AppState>, folder: String) -> Result<ProjectData, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    loader.create_group(&folder).map_err(|e| e.to_string())?;
+    load_project_data(&loader)
+}
+
+#[tauri::command]
+fn rename_group(
+    state: State<'_, AppState>,
+    old_folder: String,
+    new_folder: String,
+) -> Result<ProjectData, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    loader.rename_group(&old_folder, &new_folder).map_err(|e| e.to_string())?;
+    load_project_data(&loader)
+}
+
+#[tauri::command]
+fn delete_group(state: State<'_, AppState>, folder: String) -> Result<ProjectData, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    loader.delete_group(&folder).map_err(|e| e.to_string())?;
+    load_project_data(&loader)
+}
+
+#[tauri::command]
+fn delete_request(state: State<'_, AppState>, file_path: String) -> Result<ProjectData, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    loader.delete_request(Path::new(&file_path)).map_err(|e| e.to_string())?;
+    load_project_data(&loader)
+}
+
+#[tauri::command]
+fn rename_request(
+    state: State<'_, AppState>,
+    file_path: String,
+    new_name: String,
+) -> Result<ProjectData, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    loader.rename_request_name(Path::new(&file_path), &new_name).map_err(|e| e.to_string())?;
+    load_project_data(&loader)
+}
+
+#[tauri::command]
+fn move_request(
+    state: State<'_, AppState>,
+    file_path: String,
+    new_folder: String,
+) -> Result<MoveResult, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    let new_rel = loader.move_request(Path::new(&file_path), &new_folder).map_err(|e| e.to_string())?;
+    let project = load_project_data(&loader)?;
+    Ok(MoveResult {
+        new_file_path: new_rel.to_string_lossy().replace('\\', "/"),
+        project,
+    })
+}
+
 // ── Environment commands ───────────────────────────────────────────────────
 
 #[tauri::command]
@@ -869,6 +944,12 @@ pub fn run() {
             delete_environment,
             list_recent_projects,
             open_recent_project,
+            create_group,
+            rename_group,
+            delete_group,
+            delete_request,
+            rename_request,
+            move_request,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
