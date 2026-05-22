@@ -10,7 +10,7 @@ pub mod resolver;
 pub use body::{BodyKind, RequestBody};
 pub use environment::Environment;
 pub use error::ModelError;
-pub use loader::{ProjectLoader, RequestEntry};
+pub use loader::{parse_order_prefix, strip_order_prefix, ProjectLoader, RequestEntry};
 pub use project::AlmanacProject;
 pub use request::{Case, Expect, RequestDef};
 pub use resolved::{ResolvedBody, ResolvedRequest};

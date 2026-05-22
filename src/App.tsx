@@ -1,5 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove as _arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import "./App.css";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -48,13 +64,20 @@ interface RequestSummary {
   id: string;
   name: string;
   method: string;
-  folder: string;
+  folder: string;   // raw folder path, may include numeric prefix e.g. "1-auth"
   file_path: string;
+  order: number;    // numeric prefix from filename; Number.MAX_SAFE_INTEGER if unprefixed
 }
 
 interface EnvSummary {
   id: string;
   name: string;
+}
+
+interface FolderSummary {
+  path: string;   // raw relative path, e.g. "1-auth" or "1-auth/2-oauth"
+  label: string;  // display: prefix stripped at each component, e.g. "auth" or "auth/oauth"
+  order: number;  // numeric order of the last component
 }
 
 interface ProjectData {
@@ -63,11 +86,21 @@ interface ProjectData {
   description?: string;
   requests: RequestSummary[];
   environments: EnvSummary[];
-  folders: string[];
+  folders: FolderSummary[];
 }
 
 interface MoveResult {
   new_file_path: string;
+  project: ProjectData;
+}
+
+interface ReorderResult {
+  moved_path: string;
+  project: ProjectData;
+}
+
+interface CreateGroupResult {
+  folder_path: string;
   project: ProjectData;
 }
 
@@ -731,38 +764,65 @@ type TreeItem =
   | { kind: "request"; req: RequestSummary };
 
 function buildTree(
-  allFolders: string[],
+  allFolders: FolderSummary[],
   requests: RequestSummary[],
   parentPath: string = ""
 ): TreeItem[] {
   const levelReqs = requests
     .filter((r) => r.folder === parentPath)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 
   const directChildren = allFolders
     .filter((f) => {
-      if (parentPath === "") return !f.includes("/");
+      if (parentPath === "") return !f.path.includes("/");
       const prefix = parentPath + "/";
-      return f.startsWith(prefix) && !f.slice(prefix.length).includes("/");
+      return f.path.startsWith(prefix) && !f.path.slice(prefix.length).includes("/");
     })
-    .sort();
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
 
   return [
     ...levelReqs.map((req) => ({ kind: "request" as const, req })),
-    ...directChildren.map((folder) => ({
+    ...directChildren.map((f) => ({
       kind: "folder" as const,
-      path: folder,
-      label: parentPath ? folder.slice(parentPath.length + 1) : folder,
-      children: buildTree(allFolders, requests, folder),
+      path: f.path,
+      label: f.label,
+      children: buildTree(allFolders, requests, f.path),
     })),
   ];
+}
+
+// ── Sortable drag-and-drop wrapper ─────────────────────────────────────────
+
+function SortableItem({
+  id,
+  data,
+  children,
+}: {
+  id: string;
+  data: Record<string, unknown>;
+  children: (dragHandleProps: React.HTMLAttributes<HTMLElement>) => React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id, data });
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.4 : 1,
+      }}
+    >
+      {children({ ...attributes, ...listeners })}
+    </div>
+  );
 }
 
 // ── Sidebar ────────────────────────────────────────────────────────────────
 
 type CtxMenu =
-  | { kind: "folder"; path: string; x: number; y: number }
-  | { kind: "request"; filePath: string; reqName: string; x: number; y: number };
+  | { kind: "folder"; path: string; x: number; y: number; siblingIndex: number; siblingCount: number }
+  | { kind: "request"; filePath: string; reqName: string; x: number; y: number; siblingIndex: number; siblingCount: number };
 
 type Renaming =
   | { kind: "folder"; path: string; value: string }
@@ -794,6 +854,8 @@ function Sidebar({
   onRenameRequest,
   onDeleteRequest,
   onMoveRequest,
+  onReorderRequest,
+  onReorderGroup,
 }: {
   project: ProjectData | null;
   selectedFilePath: string | null;
@@ -808,18 +870,23 @@ function Sidebar({
   onEnvChange: (envId: string | null) => void;
   onRunChecks: () => void;
   onEditEnvs: () => void;
-  onCreateGroup: (folder: string) => void;
-  onRenameGroup: (oldFolder: string, newFolder: string) => void;
+  onCreateGroup: (path: string) => void;
+  onRenameGroup: (oldFolder: string, newLabel: string) => void;
   onDeleteGroup: (folder: string) => void;
   onRenameRequest: (filePath: string, newName: string) => void;
   onDeleteRequest: (filePath: string) => void;
   onMoveRequest: (filePath: string, newFolder: string) => void;
+  onReorderRequest: (filePath: string, newPosition: number) => void;
+  onReorderGroup: (folder: string, newPosition: number) => void;
 }) {
   const [showRecentMenu, setShowRecentMenu] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [renaming, setRenaming] = useState<Renaming | null>(null);
   const [moving, setMoving] = useState<{ filePath: string; x: number; y: number } | null>(null);
   const [newGroup, setNewGroup] = useState<{ parentPath: string; value: string } | null>(null);
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const recentWrapRef = useRef<HTMLDivElement>(null);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
@@ -861,138 +928,264 @@ function Sidebar({
   const allFolders = project?.folders ?? [];
   const tree = project ? buildTree(allFolders, project.requests) : [];
 
-  function renderItems(items: TreeItem[], depth: number): React.ReactNode {
-    return items.map((item) => {
-      if (item.kind === "request") {
-        const req = item.req;
-        const isActive = selectedFilePath === req.file_path;
-        const isRenamingThis =
-          renaming?.kind === "request" && renaming.filePath === req.file_path;
-        return (
-          <div
-            key={req.file_path}
-            className={`sidebar-req${isActive ? " sidebar-req-active" : ""}`}
-            style={{ paddingLeft: depth * 12 }}
-          >
-            <div
-              className="sidebar-req-main"
-              onClick={() => !isRenamingThis && onSelectRequest(req.file_path)}
-            >
-              <MethodBadge method={req.method} />
-              {isRenamingThis ? (
-                <input
-                  className="rename-input"
-                  value={renaming.value}
-                  autoFocus
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={(e) =>
-                    setRenaming({ kind: "request", filePath: req.file_path, value: e.target.value })
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && renaming.value.trim()) {
-                      onRenameRequest(req.file_path, renaming.value.trim());
-                      setRenaming(null);
-                    } else if (e.key === "Escape") {
-                      setRenaming(null);
-                    }
-                  }}
-                  onBlur={() => setRenaming(null)}
-                />
-              ) : (
-                <span className="sidebar-req-name">{req.name}</span>
-              )}
-            </div>
-            <button
-              className="sidebar-more-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setCtxMenu({
-                  kind: "request",
-                  filePath: req.file_path,
-                  reqName: req.name,
-                  x: e.clientX,
-                  y: e.clientY,
-                });
-              }}
-              title="Options"
-            >
-              ⋮
-            </button>
-          </div>
-        );
+  function handleDragStart(event: DragStartEvent) {
+    setActiveDragId(String(event.active.id));
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    setActiveDragId(null);
+    if (!over || active.id === over.id) return;
+
+    // dnd-kit exposes the SortableContext id as sortable.containerId on the data
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const activeContainer: string = (active.data.current as any)?.sortable?.containerId ?? "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const overContainer: string = (over.data.current as any)?.sortable?.containerId ?? activeContainer;
+
+    if (activeContainer.startsWith("reqs:") && overContainer.startsWith("reqs:")) {
+      const activeFolder = activeContainer.slice(5);
+      const overFolder = overContainer.slice(5);
+      if (activeFolder === overFolder) {
+        // Same folder → reorder
+        const sibs = (project?.requests ?? [])
+          .filter((r) => r.folder === activeFolder)
+          .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+        const newIdx = sibs.findIndex((r) => r.file_path === String(over.id));
+        if (newIdx >= 0) onReorderRequest(String(active.id), newIdx);
+      } else {
+        // Cross-folder drop → move
+        onMoveRequest(String(active.id), overFolder);
       }
+    } else if (activeContainer.startsWith("dirs:") && overContainer.startsWith("dirs:")) {
+      const activeParent = activeContainer.slice(5);
+      const overParent = overContainer.slice(5);
+      if (activeParent === overParent) {
+        const sibs = allFolders
+          .filter((f) => {
+            if (activeParent === "") return !f.path.includes("/");
+            const pref = activeParent + "/";
+            return f.path.startsWith(pref) && !f.path.slice(pref.length).includes("/");
+          })
+          .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+        const newIdx = sibs.findIndex((f) => f.path === String(over.id));
+        if (newIdx >= 0) onReorderGroup(String(active.id), newIdx);
+      }
+    }
+  }
 
-      // Folder
-      const isRenamingThis =
-        renaming?.kind === "folder" && renaming.path === item.path;
-      const isAddingSubfolder = newGroup?.parentPath === item.path;
+  function renderItems(items: TreeItem[], depth: number, parentFolder: string): React.ReactNode {
+    const reqItems = items
+      .filter((i): i is { kind: "request"; req: RequestSummary } => i.kind === "request")
+      .map((i) => i.req);
+    const folderItems = items.filter(
+      (i): i is { kind: "folder"; path: string; label: string; children: TreeItem[] } =>
+        i.kind === "folder"
+    );
 
-      return (
-        <div key={item.path} className="sidebar-folder">
-          <div className="sidebar-folder-row" style={{ paddingLeft: depth * 12 }}>
-            {isRenamingThis ? (
-              <input
-                className="rename-input rename-input-folder"
-                value={renaming.value}
-                autoFocus
-                onChange={(e) =>
-                  setRenaming({ kind: "folder", path: item.path, value: e.target.value })
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && renaming.value.trim()) {
-                    const parentSegment = item.path.includes("/")
-                      ? item.path.slice(0, item.path.lastIndexOf("/") + 1)
-                      : "";
-                    onRenameGroup(item.path, parentSegment + renaming.value.trim());
-                    setRenaming(null);
-                  } else if (e.key === "Escape") {
-                    setRenaming(null);
-                  }
-                }}
-                onBlur={() => setRenaming(null)}
-              />
-            ) : (
-              <span className="sidebar-folder-name">{item.label}</span>
-            )}
-            <button
-              className="sidebar-more-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setCtxMenu({ kind: "folder", path: item.path, x: e.clientX, y: e.clientY });
-              }}
-              title="Folder options"
-            >
-              ⋮
-            </button>
-          </div>
-          <div className="sidebar-folder-children">
-            {renderItems(item.children, depth + 1)}
-            {isAddingSubfolder && (
-              <div className="new-group-input-row" style={{ paddingLeft: (depth + 1) * 12 }}>
-                <input
-                  className="rename-input"
-                  placeholder="subfolder-name"
-                  value={newGroup!.value}
-                  autoFocus
-                  onChange={(e) =>
-                    setNewGroup({ parentPath: item.path, value: e.target.value })
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && newGroup!.value.trim()) {
-                      onCreateGroup(item.path + "/" + newGroup!.value.trim());
-                      setNewGroup(null);
-                    } else if (e.key === "Escape") {
-                      setNewGroup(null);
-                    }
-                  }}
-                  onBlur={() => setNewGroup(null)}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-      );
-    });
+    return (
+      <>
+        {/* Requests sortable group */}
+        <SortableContext
+          id={`reqs:${parentFolder}`}
+          items={reqItems.map((r) => r.file_path)}
+          strategy={verticalListSortingStrategy}
+        >
+          {reqItems.map((req) => {
+            const isActive = selectedFilePath === req.file_path;
+            const isRenamingThis =
+              renaming?.kind === "request" && renaming.filePath === req.file_path;
+            // Compute sibling index for Up/Down menu
+            const reqSibs = (project?.requests ?? [])
+              .filter((r) => r.folder === parentFolder)
+              .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+            const reqSibIdx = reqSibs.findIndex((r) => r.file_path === req.file_path);
+
+            return (
+              <SortableItem
+                key={req.file_path}
+                id={req.file_path}
+                data={{ type: "request", folder: parentFolder }}
+              >
+                {(dragHandleProps) => (
+                  <div
+                    className={`sidebar-req${isActive ? " sidebar-req-active" : ""}`}
+                    style={{ paddingLeft: depth * 12 }}
+                  >
+                    <span className="drag-handle" title="Drag to reorder" {...dragHandleProps}>
+                      ⠿
+                    </span>
+                    <div
+                      className="sidebar-req-main"
+                      onClick={() => !isRenamingThis && onSelectRequest(req.file_path)}
+                    >
+                      <MethodBadge method={req.method} />
+                      {isRenamingThis ? (
+                        <input
+                          className="rename-input"
+                          value={renaming.value}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) =>
+                            setRenaming({
+                              kind: "request",
+                              filePath: req.file_path,
+                              value: e.target.value,
+                            })
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && renaming.value.trim()) {
+                              onRenameRequest(req.file_path, renaming.value.trim());
+                              setRenaming(null);
+                            } else if (e.key === "Escape") {
+                              setRenaming(null);
+                            }
+                          }}
+                          onBlur={() => setRenaming(null)}
+                        />
+                      ) : (
+                        <span className="sidebar-req-name">{req.name}</span>
+                      )}
+                    </div>
+                    <button
+                      className="sidebar-more-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCtxMenu({
+                          kind: "request",
+                          filePath: req.file_path,
+                          reqName: req.name,
+                          x: e.clientX,
+                          y: e.clientY,
+                          siblingIndex: reqSibIdx,
+                          siblingCount: reqSibs.length,
+                        });
+                      }}
+                      title="Options"
+                    >
+                      ⋮
+                    </button>
+                  </div>
+                )}
+              </SortableItem>
+            );
+          })}
+        </SortableContext>
+
+        {/* Folders sortable group */}
+        <SortableContext
+          id={`dirs:${parentFolder}`}
+          items={folderItems.map((i) => i.path)}
+          strategy={verticalListSortingStrategy}
+        >
+          {folderItems.map((item) => {
+            const isRenamingThis =
+              renaming?.kind === "folder" && renaming.path === item.path;
+            const isAddingSubfolder = newGroup?.parentPath === item.path;
+            // Compute sibling index for Up/Down menu
+            const dirParent = item.path.includes("/")
+              ? item.path.slice(0, item.path.lastIndexOf("/"))
+              : "";
+            const dirSibs = allFolders
+              .filter((f) => {
+                if (dirParent === "") return !f.path.includes("/");
+                const pref = dirParent + "/";
+                return f.path.startsWith(pref) && !f.path.slice(pref.length).includes("/");
+              })
+              .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+            const dirSibIdx = dirSibs.findIndex((f) => f.path === item.path);
+
+            return (
+              <SortableItem
+                key={item.path}
+                id={item.path}
+                data={{ type: "folder", parentFolder }}
+              >
+                {(dragHandleProps) => (
+                  <div className="sidebar-folder">
+                    <div className="sidebar-folder-row" style={{ paddingLeft: depth * 12 }}>
+                      <span className="drag-handle" title="Drag to reorder" {...dragHandleProps}>
+                        ⠿
+                      </span>
+                      {isRenamingThis ? (
+                        <input
+                          className="rename-input rename-input-folder"
+                          value={renaming.value}
+                          autoFocus
+                          onChange={(e) =>
+                            setRenaming({
+                              kind: "folder",
+                              path: item.path,
+                              value: e.target.value,
+                            })
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && renaming.value.trim()) {
+                              onRenameGroup(item.path, renaming.value.trim());
+                              setRenaming(null);
+                            } else if (e.key === "Escape") {
+                              setRenaming(null);
+                            }
+                          }}
+                          onBlur={() => setRenaming(null)}
+                        />
+                      ) : (
+                        <span className="sidebar-folder-name">{item.label}</span>
+                      )}
+                      <button
+                        className="sidebar-more-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCtxMenu({
+                            kind: "folder",
+                            path: item.path,
+                            x: e.clientX,
+                            y: e.clientY,
+                            siblingIndex: dirSibIdx,
+                            siblingCount: dirSibs.length,
+                          });
+                        }}
+                        title="Folder options"
+                      >
+                        ⋮
+                      </button>
+                    </div>
+                    <div className="sidebar-folder-children">
+                      {renderItems(item.children, depth + 1, item.path)}
+                      {isAddingSubfolder && (
+                        <div
+                          className="new-group-input-row"
+                          style={{ paddingLeft: (depth + 1) * 12 }}
+                        >
+                          <input
+                            className="rename-input"
+                            placeholder="subfolder-name"
+                            value={newGroup!.value}
+                            autoFocus
+                            onChange={(e) =>
+                              setNewGroup({ parentPath: item.path, value: e.target.value })
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && newGroup!.value.trim()) {
+                                onCreateGroup(item.path + "/" + newGroup!.value.trim());
+                                setNewGroup(null);
+                              } else if (e.key === "Escape") {
+                                setNewGroup(null);
+                              }
+                            }}
+                            onBlur={() => setNewGroup(null)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </SortableItem>
+            );
+          })}
+        </SortableContext>
+      </>
+    );
   }
 
   return (
@@ -1047,10 +1240,11 @@ function Sidebar({
         </div>
       )}
 
+      <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <div className="sidebar-tree">
         {project ? (
           <>
-            {renderItems(tree, 0)}
+            {renderItems(tree, 0, "")}
             {newGroup?.parentPath === "" && (
               <div className="new-group-input-row">
                 <input
@@ -1080,6 +1274,17 @@ function Sidebar({
         )}
       </div>
 
+      <DragOverlay>
+        {activeDragId ? (
+          <div className="drag-overlay-item">
+            {activeDragId.endsWith(".yaml")
+              ? (project?.requests.find((r) => r.file_path === activeDragId)?.name ?? activeDragId)
+              : (allFolders.find((f) => f.path === activeDragId)?.label ?? activeDragId)}
+          </div>
+        ) : null}
+      </DragOverlay>
+      </DndContext>
+
       {/* Context menu */}
       {ctxMenu && (
         <div
@@ -1092,15 +1297,39 @@ function Sidebar({
               <button
                 className="context-menu-item"
                 onClick={() => {
-                  const label = ctxMenu.path.includes("/")
-                    ? ctxMenu.path.slice(ctxMenu.path.lastIndexOf("/") + 1)
-                    : ctxMenu.path;
-                  setRenaming({ kind: "folder", path: ctxMenu.path, value: label });
+                  // Show bare label (prefix stripped) in the rename input
+                  const parts = ctxMenu.path.split("/");
+                  const folderLabel =
+                    allFolders.find((f) => f.path === ctxMenu.path)?.label ??
+                    parts[parts.length - 1] ?? ctxMenu.path;
+                  setRenaming({ kind: "folder", path: ctxMenu.path, value: folderLabel });
                   setCtxMenu(null);
                 }}
               >
                 Rename
               </button>
+              {ctxMenu.siblingIndex > 0 && (
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    onReorderGroup(ctxMenu.path, ctxMenu.siblingIndex - 1);
+                    setCtxMenu(null);
+                  }}
+                >
+                  Move up
+                </button>
+              )}
+              {ctxMenu.siblingIndex < ctxMenu.siblingCount - 1 && (
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    onReorderGroup(ctxMenu.path, ctxMenu.siblingIndex + 1);
+                    setCtxMenu(null);
+                  }}
+                >
+                  Move down
+                </button>
+              )}
               <button
                 className="context-menu-item"
                 onClick={() => {
@@ -1142,6 +1371,28 @@ function Sidebar({
               >
                 Rename
               </button>
+              {ctxMenu.siblingIndex > 0 && (
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    onReorderRequest(ctxMenu.filePath, ctxMenu.siblingIndex - 1);
+                    setCtxMenu(null);
+                  }}
+                >
+                  Move up
+                </button>
+              )}
+              {ctxMenu.siblingIndex < ctxMenu.siblingCount - 1 && (
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    onReorderRequest(ctxMenu.filePath, ctxMenu.siblingIndex + 1);
+                    setCtxMenu(null);
+                  }}
+                >
+                  Move down
+                </button>
+              )}
               <button
                 className="context-menu-item"
                 onClick={() => {
@@ -1183,11 +1434,11 @@ function Sidebar({
           </button>
           {allFolders.map((f) => (
             <button
-              key={f}
+              key={f.path}
               className="move-picker-item"
-              onClick={() => { onMoveRequest(moving.filePath, f); setMoving(null); }}
+              onClick={() => { onMoveRequest(moving.filePath, f.path); setMoving(null); }}
             >
-              {f}
+              {f.label}
             </button>
           ))}
         </div>
@@ -1448,24 +1699,24 @@ export default function App() {
 
   // ── Group & request management ────────────────────────────────────────────
 
-  async function createGroup(folder: string) {
-    if (!folder.trim()) return;
+  async function createGroup(path: string) {
+    if (!path.trim()) return;
     try {
-      const data = await invoke<ProjectData>("create_group", { folder: folder.trim() });
-      setProject(data);
+      const result = await invoke<CreateGroupResult>("create_group", { label: path.trim() });
+      setProject(result.project);
     } catch (e) { setReqError(String(e)); }
   }
 
-  async function renameGroup(oldFolder: string, newFolder: string) {
-    const nf = newFolder.trim();
-    if (!nf || oldFolder === nf) return;
+  async function renameGroup(oldFolder: string, newLabel: string) {
+    const label = newLabel.trim();
+    if (!label) return;
+    const selectedId = project?.requests.find((r) => r.file_path === selectedFilePath)?.id;
     try {
-      const data = await invoke<ProjectData>("rename_group", { oldFolder, newFolder: nf });
+      const data = await invoke<ProjectData>("rename_group", { oldFolder, newLabel: label });
       setProject(data);
-      if (selectedFilePath?.startsWith("requests/" + oldFolder + "/")) {
-        setSelectedFilePath(
-          selectedFilePath.replace("requests/" + oldFolder + "/", "requests/" + nf + "/")
-        );
+      if (selectedId) {
+        const updated = data.requests.find((r) => r.id === selectedId);
+        if (updated) setSelectedFilePath(updated.file_path);
       }
     } catch (e) { setReqError(String(e)); }
   }
@@ -1512,6 +1763,35 @@ export default function App() {
       const result = await invoke<MoveResult>("move_request", { filePath, newFolder });
       setProject(result.project);
       if (selectedFilePath === filePath) setSelectedFilePath(result.new_file_path);
+    } catch (e) { setReqError(String(e)); }
+  }
+
+  async function reorderRequest(filePath: string, newPosition: number) {
+    try {
+      const result = await invoke<ReorderResult>("reorder_request", { filePath, newPosition });
+      setProject(result.project);
+      if (selectedFilePath === filePath) {
+        setSelectedFilePath(result.moved_path);
+      } else {
+        // Another sibling may have been renamed — re-derive from id
+        const selectedId = project?.requests.find((r) => r.file_path === selectedFilePath)?.id;
+        if (selectedId) {
+          const updated = result.project.requests.find((r) => r.id === selectedId);
+          if (updated) setSelectedFilePath(updated.file_path);
+        }
+      }
+    } catch (e) { setReqError(String(e)); }
+  }
+
+  async function reorderGroup(folder: string, newPosition: number) {
+    const selectedId = project?.requests.find((r) => r.file_path === selectedFilePath)?.id;
+    try {
+      const result = await invoke<ReorderResult>("reorder_group", { folder, newPosition });
+      setProject(result.project);
+      if (selectedId) {
+        const updated = result.project.requests.find((r) => r.id === selectedId);
+        if (updated) setSelectedFilePath(updated.file_path);
+      }
     } catch (e) { setReqError(String(e)); }
   }
 
@@ -1687,6 +1967,8 @@ export default function App() {
         onRenameRequest={renameRequestName}
         onDeleteRequest={deleteProjectRequest}
         onMoveRequest={moveProjectRequest}
+        onReorderRequest={reorderRequest}
+        onReorderGroup={reorderGroup}
       />
 
       <div className="main-area">

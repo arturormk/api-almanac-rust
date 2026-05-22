@@ -2,7 +2,34 @@ use crate::environment::Environment;
 use crate::error::ModelError;
 use crate::project::AlmanacProject;
 use crate::request::RequestDef;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// Parse a leading "N-" numeric prefix from a filename stem or directory name.
+/// Returns `(N, rest_of_name)`. If no valid prefix is found, returns `(u32::MAX, full_name)`.
+///
+/// Examples: `"1-login"` → `(1, "login")`, `"10-auth"` → `(10, "auth")`,
+/// `"login"` → `(u32::MAX, "login")`, `"-bad"` → `(u32::MAX, "-bad")`.
+pub fn parse_order_prefix(name: &str) -> (u32, &str) {
+    let bytes = name.as_bytes();
+    let mut end = 0;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    if end > 0 && end < bytes.len() && bytes[end] == b'-' {
+        if let Ok(n) = name[..end].parse::<u32>() {
+            return (n, &name[end + 1..]);
+        }
+    }
+    (u32::MAX, name)
+}
+
+/// Strip a leading "N-" numeric prefix for display. Returns the rest of the name.
+///
+/// Example: `"1-auth"` → `"auth"`, `"users"` → `"users"`.
+pub fn strip_order_prefix(name: &str) -> &str {
+    parse_order_prefix(name).1
+}
 
 /// A request paired with the path of its YAML file relative to the project root.
 #[derive(Debug, Clone)]
@@ -13,7 +40,7 @@ pub struct RequestEntry {
 }
 
 impl RequestEntry {
-    /// Folder component relative to `requests/`, e.g. `"auth"` or `""` for root.
+    /// Folder component relative to `requests/`, e.g. `"1-auth"` or `""` for root.
     pub fn folder(&self) -> String {
         let path_str = self.file_path.to_string_lossy();
         let rel = path_str
@@ -25,6 +52,15 @@ impl RequestEntry {
             .and_then(|p| p.to_str())
             .unwrap_or("");
         parent.replace('\\', "/")
+    }
+
+    /// Numeric order derived from the filename prefix, or `u32::MAX` if unprefixed.
+    pub fn order(&self) -> u32 {
+        let stem = self.file_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        parse_order_prefix(stem).0
     }
 }
 
@@ -62,7 +98,8 @@ impl ProjectLoader {
     }
 
     /// Load all request YAML files from `requests/**/*.yaml`, each paired with
-    /// its path relative to the project root.
+    /// its path relative to the project root. Results are sorted by numeric prefix
+    /// within each directory, with un-prefixed files sorted last (order = MAX).
     pub fn load_requests(&self) -> Result<Vec<RequestEntry>, ModelError> {
         let dir = self.root.join("requests");
         if !dir.exists() {
@@ -115,8 +152,8 @@ impl ProjectLoader {
         Ok(())
     }
 
-    /// Return all subdirectory paths under `requests/`, relative to the `requests/` dir,
-    /// sorted alphabetically. Includes empty directories.
+    /// Return all subdirectory paths under `requests/`, relative to the `requests/` dir.
+    /// Sorted by numeric prefix at each level, then alphabetically. Includes empty dirs.
     pub fn list_folders(&self) -> Result<Vec<String>, ModelError> {
         let dir = self.root.join("requests");
         if !dir.exists() {
@@ -124,24 +161,52 @@ impl ProjectLoader {
         }
         let mut folders = Vec::new();
         collect_subdirs(&dir, &dir, &mut folders)?;
-        folders.sort();
         Ok(folders)
     }
 
-    /// Create a group directory under `requests/`. Intermediate directories are created as
-    /// needed, and a `.gitkeep` is placed inside so empty groups survive git tracking.
-    pub fn create_group(&self, folder_path: &str) -> Result<(), ModelError> {
-        let dir = self.root.join("requests").join(folder_path);
-        std::fs::create_dir_all(&dir)?;
-        let gitkeep = dir.join(".gitkeep");
+    /// Create a group directory under `requests/`. The last path component receives an
+    /// auto-assigned numeric prefix (one after the highest existing sibling prefix).
+    /// Intermediate parent directories are created if missing (without prefix).
+    ///
+    /// Returns the full folder path relative to `requests/` with the prefix applied to
+    /// the last component, e.g. `"3-payments"` or `"1-auth/2-oauth"`.
+    pub fn create_group(&self, path: &str) -> Result<String, ModelError> {
+        let requests_dir = self.root.join("requests");
+        let (parent_rel, label) = match path.rfind('/') {
+            Some(idx) => (&path[..idx], &path[idx + 1..]),
+            None => ("", path),
+        };
+        let parent_abs = if parent_rel.is_empty() {
+            requests_dir.clone()
+        } else {
+            requests_dir.join(parent_rel)
+        };
+        let max_order = sorted_subdirs_in(&parent_abs)?
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+            .map(|n| parse_order_prefix(n).0)
+            .filter(|&n| n != u32::MAX)
+            .max()
+            .unwrap_or(0);
+        let prefix = max_order + 1;
+        let new_name = format!("{prefix}-{label}");
+        let new_dir = parent_abs.join(&new_name);
+        std::fs::create_dir_all(&new_dir)?;
+        let gitkeep = new_dir.join(".gitkeep");
         if !gitkeep.exists() {
             std::fs::write(&gitkeep, "")?;
         }
-        Ok(())
+        let full_path = if parent_rel.is_empty() {
+            new_name
+        } else {
+            format!("{parent_rel}/{new_name}")
+        };
+        Ok(full_path)
     }
 
-    /// Rename a group by moving its directory. Intermediate parent directories for the
-    /// new path are created automatically.
+    /// Rename a group by moving its directory. The caller is responsible for preserving
+    /// the numeric prefix in `new_folder` when desired. Intermediate parent directories
+    /// for the new path are created automatically.
     pub fn rename_group(&self, old_folder: &str, new_folder: &str) -> Result<(), ModelError> {
         let requests_dir = self.root.join("requests");
         let old_dir = requests_dir.join(old_folder);
@@ -205,21 +270,189 @@ impl ProjectLoader {
         std::fs::rename(&old_abs, &new_abs)?;
         Ok(new_rel_path)
     }
+
+    /// Reorder a request within its folder by assigning consecutive 1..=N prefixes.
+    ///
+    /// `rel_path` is the current path relative to the project root.
+    /// `new_position` is the 0-based target index among siblings (clamped to valid range).
+    ///
+    /// Returns a map of `old_relative_path → new_relative_path` for every file that
+    /// was renamed (use it to update `selectedFilePath` in the frontend).
+    pub fn reorder_request(
+        &self,
+        rel_path: &Path,
+        new_position: usize,
+    ) -> Result<HashMap<PathBuf, PathBuf>, ModelError> {
+        let abs_path = self.root.join(rel_path);
+        let folder_abs = abs_path.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+        })?;
+
+        let mut siblings = yaml_files_in(folder_abs)?;
+        let current_idx = siblings.iter().position(|p| p == &abs_path).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "file not found among siblings")
+        })?;
+
+        let item = siblings.remove(current_idx);
+        let insert_at = new_position.min(siblings.len());
+        siblings.insert(insert_at, item);
+
+        renumber_files(&self.root, folder_abs, siblings)
+    }
+
+    /// Reorder a group (directory) among its siblings by assigning consecutive 1..=N prefixes.
+    ///
+    /// `folder` is relative to `requests/`, e.g. `"2-users"` or `"1-auth/3-oauth"`.
+    /// `new_position` is the 0-based target index among siblings (clamped to valid range).
+    ///
+    /// Returns a map of `old_folder_path → new_folder_path` (both relative to `requests/`)
+    /// for every directory that was renamed.
+    pub fn reorder_group(
+        &self,
+        folder: &str,
+        new_position: usize,
+    ) -> Result<HashMap<String, String>, ModelError> {
+        let requests_dir = self.root.join("requests");
+        let folder_abs = requests_dir.join(folder);
+        let parent_abs = folder_abs.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "folder has no parent")
+        })?;
+
+        let mut siblings = sorted_subdirs_in(parent_abs)?;
+        let current_idx = siblings.iter().position(|p| p == &folder_abs).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "folder not found among siblings")
+        })?;
+
+        let item = siblings.remove(current_idx);
+        let insert_at = new_position.min(siblings.len());
+        siblings.insert(insert_at, item);
+
+        let mut renames = HashMap::new();
+        for (i, old_abs) in siblings.iter().enumerate() {
+            let n = (i + 1) as u32;
+            let dir_name = old_abs.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let bare = strip_order_prefix(dir_name);
+            let new_name = format!("{n}-{bare}");
+            let new_abs = parent_abs.join(&new_name);
+            if old_abs != &new_abs {
+                std::fs::rename(old_abs, &new_abs)?;
+                let old_rel = old_abs
+                    .strip_prefix(&requests_dir)
+                    .unwrap_or(old_abs)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let new_rel = new_abs
+                    .strip_prefix(&requests_dir)
+                    .unwrap_or(&new_abs)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                renames.insert(old_rel, new_rel);
+            }
+        }
+        Ok(renames)
+    }
 }
 
-fn collect_subdirs(base: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), ModelError> {
+// ── Private helpers ────────────────────────────────────────────────────────
+
+/// Sort key: `(numeric_prefix, lowercase_remainder)` from the last path component.
+fn order_key(path: &Path) -> (u32, String) {
+    let name = path
+        .file_stem()
+        .or_else(|| path.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let (n, rest) = parse_order_prefix(name);
+    (n, rest.to_lowercase())
+}
+
+/// Return all `.yaml`/`.yml` files directly inside a directory, sorted by numeric prefix.
+fn yaml_files_in(dir: &Path) -> Result<Vec<PathBuf>, ModelError> {
+    let mut files = Vec::new();
+    if !dir.exists() {
+        return Ok(files);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_file() && is_yaml(&path) {
+            files.push(path);
+        }
+    }
+    files.sort_by(|a, b| order_key(a).cmp(&order_key(b)));
+    Ok(files)
+}
+
+/// Recursively collect all `.yaml`/`.yml` files under a directory,
+/// traversing subdirectories in numeric-prefix order.
+fn collect_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), ModelError> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?
         .map(|e| e.map(|e| e.path()))
         .collect::<Result<_, _>>()?;
-    entries.sort();
+    entries.sort_by(|a, b| order_key(a).cmp(&order_key(b)));
     for path in entries {
         if path.is_dir() {
-            let rel = path.strip_prefix(base).unwrap_or(&path);
-            out.push(rel.to_string_lossy().replace('\\', "/"));
-            collect_subdirs(base, &path, out)?;
+            collect_yaml_files(&path, out)?;
+        } else if path.is_file() && is_yaml(&path) {
+            out.push(path);
         }
     }
     Ok(())
+}
+
+/// Recursively collect subdirectory paths relative to `base`, in numeric-prefix order.
+fn collect_subdirs(base: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), ModelError> {
+    for path in sorted_subdirs_in(dir)? {
+        let rel = path.strip_prefix(base).unwrap_or(&path);
+        out.push(rel.to_string_lossy().replace('\\', "/"));
+        collect_subdirs(base, &path, out)?;
+    }
+    Ok(())
+}
+
+/// Return direct subdirectories of `dir` sorted by numeric prefix then alphabetically.
+fn sorted_subdirs_in(dir: &Path) -> Result<Vec<PathBuf>, ModelError> {
+    let mut dirs = Vec::new();
+    if !dir.exists() {
+        return Ok(dirs);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort_by(|a, b| order_key(a).cmp(&order_key(b)));
+    Ok(dirs)
+}
+
+/// Renumber a list of sibling yaml files with consecutive prefixes 1..=N,
+/// renaming on disk any files whose name changes. Returns the old→new relative-path map.
+fn renumber_files(
+    root: &Path,
+    folder_abs: &Path,
+    siblings: Vec<PathBuf>,
+) -> Result<HashMap<PathBuf, PathBuf>, ModelError> {
+    let mut renames = HashMap::new();
+    for (i, old_abs) in siblings.iter().enumerate() {
+        let n = (i + 1) as u32;
+        let stem = old_abs.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let bare = strip_order_prefix(stem);
+        let new_name = format!("{n}-{bare}.yaml");
+        let new_abs = folder_abs.join(&new_name);
+        if old_abs != &new_abs {
+            std::fs::rename(old_abs, &new_abs)?;
+            let old_rel = old_abs
+                .strip_prefix(root)
+                .unwrap_or(old_abs)
+                .to_path_buf();
+            let new_rel = new_abs
+                .strip_prefix(root)
+                .unwrap_or(&new_abs)
+                .to_path_buf();
+            renames.insert(old_rel, new_rel);
+        }
+    }
+    Ok(renames)
 }
 
 fn load_yaml<T>(path: &Path) -> Result<T, ModelError>
@@ -231,35 +464,6 @@ where
         path: path.display().to_string(),
         source: e,
     })
-}
-
-/// Return all `.yaml`/`.yml` files directly inside a directory (non-recursive).
-fn yaml_files_in(dir: &Path) -> Result<Vec<PathBuf>, ModelError> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_file() && is_yaml(&path) {
-            files.push(path);
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
-/// Recursively collect all `.yaml`/`.yml` files under a directory.
-fn collect_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), ModelError> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?
-        .map(|e| e.map(|e| e.path()))
-        .collect::<Result<_, _>>()?;
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_yaml_files(&path, out)?;
-        } else if path.is_file() && is_yaml(&path) {
-            out.push(path);
-        }
-    }
-    Ok(())
 }
 
 fn is_yaml(path: &Path) -> bool {
@@ -282,6 +486,37 @@ mod tests {
         }
         fs::write(path, content).unwrap();
     }
+
+    // ── parse_order_prefix ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_order_prefix_extracts_number() {
+        assert_eq!(parse_order_prefix("1-login"), (1, "login"));
+        assert_eq!(parse_order_prefix("10-auth"), (10, "auth"));
+        assert_eq!(parse_order_prefix("100-users"), (100, "users"));
+    }
+
+    #[test]
+    fn parse_order_prefix_no_prefix_returns_max() {
+        let (n, rest) = parse_order_prefix("login");
+        assert_eq!(n, u32::MAX);
+        assert_eq!(rest, "login");
+    }
+
+    #[test]
+    fn parse_order_prefix_leading_dash_is_not_prefix() {
+        let (n, _) = parse_order_prefix("-bad");
+        assert_eq!(n, u32::MAX);
+    }
+
+    #[test]
+    fn strip_order_prefix_removes_prefix() {
+        assert_eq!(strip_order_prefix("1-auth"), "auth");
+        assert_eq!(strip_order_prefix("42-users"), "users");
+        assert_eq!(strip_order_prefix("no-prefix"), "no-prefix");
+    }
+
+    // ── load_project ──────────────────────────────────────────────────────
 
     #[test]
     fn load_project_from_disk() {
@@ -308,6 +543,8 @@ mod tests {
         ));
     }
 
+    // ── load_environments ─────────────────────────────────────────────────
+
     #[test]
     fn load_environments_from_disk() {
         let tmp = TempDir::new().unwrap();
@@ -327,6 +564,8 @@ mod tests {
         let local = envs.iter().find(|e| e.id == "local").unwrap();
         assert_eq!(local.vars["base_url"], "http://localhost:8000");
     }
+
+    // ── load_requests ─────────────────────────────────────────────────────
 
     #[test]
     fn load_requests_carries_file_path() {
@@ -353,6 +592,51 @@ mod tests {
     }
 
     #[test]
+    fn load_requests_sorted_by_prefix() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "requests/2-register.yaml",
+            "id: register\nname: Register\nmethod: POST\nurl: /register\n",
+        );
+        write(
+            tmp.path(),
+            "requests/1-login.yaml",
+            "id: login\nname: Login\nmethod: POST\nurl: /login\n",
+        );
+        write(
+            tmp.path(),
+            "requests/10-verify.yaml",
+            "id: verify\nname: Verify\nmethod: GET\nurl: /verify\n",
+        );
+        let loader = ProjectLoader::new(tmp.path());
+        let entries = loader.load_requests().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].request.id, "login");    // 1-login
+        assert_eq!(entries[1].request.id, "register"); // 2-register
+        assert_eq!(entries[2].request.id, "verify");   // 10-verify
+    }
+
+    #[test]
+    fn load_requests_unprefixed_sorted_last() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "requests/login.yaml",
+            "id: login\nname: Login\nmethod: POST\nurl: /login\n",
+        );
+        write(
+            tmp.path(),
+            "requests/1-health.yaml",
+            "id: health\nname: Health\nmethod: GET\nurl: /health\n",
+        );
+        let loader = ProjectLoader::new(tmp.path());
+        let entries = loader.load_requests().unwrap();
+        assert_eq!(entries[0].request.id, "health"); // prefixed → first
+        assert_eq!(entries[1].request.id, "login");  // unprefixed → last
+    }
+
+    #[test]
     fn folder_of_root_level_request_is_empty() {
         let tmp = TempDir::new().unwrap();
         write(
@@ -364,6 +648,8 @@ mod tests {
         let entries = loader.load_requests().unwrap();
         assert_eq!(entries[0].folder(), "");
     }
+
+    // ── save_request ──────────────────────────────────────────────────────
 
     #[test]
     fn save_request_round_trips() {
@@ -394,6 +680,8 @@ mod tests {
         assert_eq!(loaded.url, "{{base_url}}/users/{{id}}");
     }
 
+    // ── missing dirs ──────────────────────────────────────────────────────
+
     #[test]
     fn missing_directories_return_empty() {
         let tmp = TempDir::new().unwrap();
@@ -401,6 +689,8 @@ mod tests {
         assert!(loader.load_environments().unwrap().is_empty());
         assert!(loader.load_requests().unwrap().is_empty());
     }
+
+    // ── save_environment ──────────────────────────────────────────────────
 
     #[test]
     fn save_environment_round_trips() {
@@ -417,6 +707,8 @@ mod tests {
         assert_eq!(loaded[0].id, "local");
         assert_eq!(loaded[0].vars["base_url"], "http://localhost:8000");
     }
+
+    // ── delete_environment ────────────────────────────────────────────────
 
     #[test]
     fn delete_environment_removes_file() {
@@ -440,6 +732,8 @@ mod tests {
         loader.delete_environment("does-not-exist").unwrap();
     }
 
+    // ── list_folders ──────────────────────────────────────────────────────
+
     #[test]
     fn list_folders_returns_all_subdirs() {
         let tmp = TempDir::new().unwrap();
@@ -457,22 +751,58 @@ mod tests {
     }
 
     #[test]
-    fn list_folders_includes_empty_dirs() {
+    fn list_folders_sorted_by_prefix() {
         let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("requests/2-users")).unwrap();
+        fs::create_dir_all(tmp.path().join("requests/1-auth")).unwrap();
+        fs::create_dir_all(tmp.path().join("requests/10-health")).unwrap();
         let loader = ProjectLoader::new(tmp.path());
-        loader.create_group("empty-group").unwrap();
         let folders = loader.list_folders().unwrap();
-        assert!(folders.contains(&"empty-group".to_string()));
+        assert_eq!(folders, vec!["1-auth", "2-users", "10-health"]);
     }
 
     #[test]
-    fn create_group_makes_dir_with_gitkeep() {
+    fn list_folders_includes_empty_dirs() {
         let tmp = TempDir::new().unwrap();
         let loader = ProjectLoader::new(tmp.path());
-        loader.create_group("payments/webhooks").unwrap();
-        assert!(tmp.path().join("requests/payments/webhooks").is_dir());
-        assert!(tmp.path().join("requests/payments/webhooks/.gitkeep").exists());
+        let created = loader.create_group("empty-group").unwrap();
+        let folders = loader.list_folders().unwrap();
+        assert!(folders.contains(&created));
     }
+
+    // ── create_group ──────────────────────────────────────────────────────
+
+    #[test]
+    fn create_group_assigns_prefix_one_when_first() {
+        let tmp = TempDir::new().unwrap();
+        let loader = ProjectLoader::new(tmp.path());
+        let path = loader.create_group("payments").unwrap();
+        assert_eq!(path, "1-payments");
+        assert!(tmp.path().join("requests/1-payments").is_dir());
+        assert!(tmp.path().join("requests/1-payments/.gitkeep").exists());
+    }
+
+    #[test]
+    fn create_group_assigns_next_prefix_after_siblings() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("requests/1-auth")).unwrap();
+        fs::create_dir_all(tmp.path().join("requests/2-users")).unwrap();
+        let loader = ProjectLoader::new(tmp.path());
+        let path = loader.create_group("health").unwrap();
+        assert_eq!(path, "3-health");
+    }
+
+    #[test]
+    fn create_group_nested_assigns_prefix_within_parent() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("requests/1-auth")).unwrap();
+        let loader = ProjectLoader::new(tmp.path());
+        let path = loader.create_group("1-auth/oauth").unwrap();
+        assert_eq!(path, "1-auth/1-oauth");
+        assert!(tmp.path().join("requests/1-auth/1-oauth").is_dir());
+    }
+
+    // ── rename_group ──────────────────────────────────────────────────────
 
     #[test]
     fn rename_group_moves_directory() {
@@ -485,6 +815,8 @@ mod tests {
         assert!(tmp.path().join("requests/authentication/login.yaml").exists());
     }
 
+    // ── delete_group ──────────────────────────────────────────────────────
+
     #[test]
     fn delete_group_removes_directory_and_contents() {
         let tmp = TempDir::new().unwrap();
@@ -495,6 +827,8 @@ mod tests {
         assert!(!tmp.path().join("requests/auth").exists());
     }
 
+    // ── delete_request ────────────────────────────────────────────────────
+
     #[test]
     fn delete_request_removes_file() {
         let tmp = TempDir::new().unwrap();
@@ -504,6 +838,8 @@ mod tests {
         loader.delete_request(std::path::Path::new("requests/ping.yaml")).unwrap();
         assert!(!tmp.path().join("requests/ping.yaml").exists());
     }
+
+    // ── rename_request_name ───────────────────────────────────────────────
 
     #[test]
     fn rename_request_name_updates_name_only() {
@@ -517,6 +853,8 @@ mod tests {
         assert_eq!(ping.request.name, "Health Check");
         assert_eq!(ping.request.id, "ping");
     }
+
+    // ── move_request ──────────────────────────────────────────────────────
 
     #[test]
     fn move_request_relocates_file() {
@@ -545,5 +883,104 @@ mod tests {
         ).unwrap();
         assert!(tmp.path().join("requests/login.yaml").exists());
         assert_eq!(new_path.to_string_lossy(), "requests/login.yaml");
+    }
+
+    // ── reorder_request ───────────────────────────────────────────────────
+
+    #[test]
+    fn reorder_request_renumbers_siblings() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "requests/1-login.yaml",
+            "id: login\nname: Login\nmethod: POST\nurl: /login\n");
+        write(tmp.path(), "requests/2-register.yaml",
+            "id: register\nname: Register\nmethod: POST\nurl: /register\n");
+        write(tmp.path(), "requests/3-verify.yaml",
+            "id: verify\nname: Verify\nmethod: GET\nurl: /verify\n");
+
+        let loader = ProjectLoader::new(tmp.path());
+        // Move 3-verify to position 0 (first)
+        let renames = loader.reorder_request(
+            Path::new("requests/3-verify.yaml"),
+            0,
+        ).unwrap();
+
+        // verify should now be 1-verify, login→2, register→3
+        assert!(tmp.path().join("requests/1-verify.yaml").exists());
+        assert!(tmp.path().join("requests/2-login.yaml").exists());
+        assert!(tmp.path().join("requests/3-register.yaml").exists());
+        assert!(!tmp.path().join("requests/3-verify.yaml").exists());
+
+        assert_eq!(renames.len(), 3);
+    }
+
+    #[test]
+    fn reorder_request_assigns_prefixes_to_unprefixed() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "requests/login.yaml",
+            "id: login\nname: Login\nmethod: POST\nurl: /login\n");
+        write(tmp.path(), "requests/register.yaml",
+            "id: register\nname: Register\nmethod: POST\nurl: /register\n");
+
+        let loader = ProjectLoader::new(tmp.path());
+        // Move register to position 0
+        let renames = loader.reorder_request(
+            Path::new("requests/register.yaml"),
+            0,
+        ).unwrap();
+
+        assert!(tmp.path().join("requests/1-register.yaml").exists());
+        assert!(tmp.path().join("requests/2-login.yaml").exists());
+        assert_eq!(renames.len(), 2);
+    }
+
+    #[test]
+    fn reorder_request_clamped_position() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "requests/1-a.yaml",
+            "id: a\nname: A\nmethod: GET\nurl: /a\n");
+        write(tmp.path(), "requests/2-b.yaml",
+            "id: b\nname: B\nmethod: GET\nurl: /b\n");
+
+        let loader = ProjectLoader::new(tmp.path());
+        // Position 100 should clamp to last
+        loader.reorder_request(Path::new("requests/1-a.yaml"), 100).unwrap();
+
+        // a should move to the end: 1-b, 2-a
+        assert!(tmp.path().join("requests/1-b.yaml").exists());
+        assert!(tmp.path().join("requests/2-a.yaml").exists());
+    }
+
+    // ── reorder_group ─────────────────────────────────────────────────────
+
+    #[test]
+    fn reorder_group_renumbers_siblings() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("requests/1-auth")).unwrap();
+        fs::create_dir_all(tmp.path().join("requests/2-users")).unwrap();
+        fs::create_dir_all(tmp.path().join("requests/3-health")).unwrap();
+
+        let loader = ProjectLoader::new(tmp.path());
+        // Move 3-health to position 0 (first)
+        let renames = loader.reorder_group("3-health", 0).unwrap();
+
+        assert!(tmp.path().join("requests/1-health").exists());
+        assert!(tmp.path().join("requests/2-auth").exists());
+        assert!(tmp.path().join("requests/3-users").exists());
+        assert!(!tmp.path().join("requests/3-health").exists());
+        assert_eq!(renames.len(), 3);
+    }
+
+    #[test]
+    fn reorder_group_assigns_prefixes_to_unprefixed() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("requests/auth")).unwrap();
+        fs::create_dir_all(tmp.path().join("requests/users")).unwrap();
+
+        let loader = ProjectLoader::new(tmp.path());
+        let renames = loader.reorder_group("users", 0).unwrap();
+
+        assert!(tmp.path().join("requests/1-users").exists());
+        assert!(tmp.path().join("requests/2-auth").exists());
+        assert_eq!(renames.len(), 2);
     }
 }

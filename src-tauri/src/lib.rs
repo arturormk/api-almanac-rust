@@ -3,6 +3,7 @@ use api_almanac_store::{apply_redaction, load_latest_response, now_iso8601, save
 use api_almanac_tools as tools;
 use api_almanac_typesketch as typesketch;
 use api_almanac_model::{
+    parse_order_prefix, strip_order_prefix,
     AlmanacProject, BodyKind, Environment, ProjectLoader, RequestDef, ResolvedBody, ResolvedRequest,
     VariableResolver,
 };
@@ -30,7 +31,7 @@ pub struct ProjectData {
     pub description: Option<String>,
     pub requests: Vec<RequestSummary>,
     pub environments: Vec<EnvSummary>,
-    pub folders: Vec<String>,
+    pub folders: Vec<FolderSummary>,
 }
 
 #[derive(Serialize)]
@@ -39,13 +40,38 @@ pub struct MoveResult {
     pub project: ProjectData,
 }
 
+/// Result returned by reorder_request and reorder_group.
+/// `moved_path` is the new path of the moved item (request file or group dir relative to requests/).
+#[derive(Serialize)]
+pub struct ReorderResult {
+    pub moved_path: String,
+    pub project: ProjectData,
+}
+
+/// Result returned by create_group, including the actual created folder path (with prefix).
+#[derive(Serialize)]
+pub struct CreateGroupResult {
+    pub folder_path: String,
+    pub project: ProjectData,
+}
+
 #[derive(Serialize)]
 pub struct RequestSummary {
     pub id: String,
     pub name: String,
     pub method: String,
-    pub folder: String,
+    pub folder: String,   // raw folder path, may include numeric prefix e.g. "1-auth"
     pub file_path: String,
+    pub order: u32,       // numeric prefix parsed from filename; u32::MAX if unprefixed
+}
+
+/// A folder entry with its raw path, display label (prefix stripped at each component),
+/// and the order index of its last path component.
+#[derive(Serialize)]
+pub struct FolderSummary {
+    pub path: String,   // raw relative path, e.g. "1-auth" or "1-auth/2-oauth"
+    pub label: String,  // display: prefix stripped at each component, e.g. "auth" or "auth/oauth"
+    pub order: u32,     // numeric order of the last component
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -138,7 +164,7 @@ fn load_project_data(loader: &ProjectLoader) -> Result<ProjectData, String> {
     let project = loader.load_project().map_err(|e| e.to_string())?;
     let requests = loader.load_requests().map_err(|e| e.to_string())?;
     let environments = loader.load_environments().map_err(|e| e.to_string())?;
-    let folders = loader.list_folders().map_err(|e| e.to_string())?;
+    let raw_folders = loader.list_folders().map_err(|e| e.to_string())?;
     Ok(ProjectData {
         name: project.name,
         id: project.id,
@@ -150,15 +176,31 @@ fn load_project_data(loader: &ProjectLoader) -> Result<ProjectData, String> {
                 name: e.request.name.clone(),
                 method: e.request.method.clone(),
                 folder: e.folder(),
-                file_path: e.file_path.to_string_lossy().into_owned(),
+                file_path: e.file_path.to_string_lossy().replace('\\', "/"),
+                order: e.order(),
             })
             .collect(),
         environments: environments
             .into_iter()
             .map(|env| EnvSummary { id: env.id, name: env.name })
             .collect(),
-        folders,
+        folders: raw_folders.into_iter().map(folder_summary_from_path).collect(),
     })
+}
+
+/// Build a FolderSummary from a raw folder path like "1-auth" or "1-auth/2-oauth".
+fn folder_summary_from_path(path: String) -> FolderSummary {
+    let label = path
+        .split('/')
+        .map(strip_order_prefix)
+        .collect::<Vec<_>>()
+        .join("/");
+    let order = path
+        .split('/')
+        .last()
+        .map(|component| parse_order_prefix(component).0)
+        .unwrap_or(u32::MAX);
+    FolderSummary { path, label, order }
 }
 
 fn check_to_item(c: Check) -> CheckItem {
@@ -770,22 +812,42 @@ fn slugify(s: &str) -> String {
 
 // ── Group & request management commands ───────────────────────────────────
 
+/// Create a group directory. `label` is the bare name without prefix (e.g. "payments").
+/// For a nested group, `label` may include a parent prefix path (e.g. "1-auth/oauth").
+/// The backend assigns the next available numeric prefix automatically.
+/// Returns the actual folder path created (with prefix) alongside the refreshed project.
 #[tauri::command]
-fn create_group(state: State<'_, AppState>, folder: String) -> Result<ProjectData, String> {
+fn create_group(state: State<'_, AppState>, label: String) -> Result<CreateGroupResult, String> {
     let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
     let loader = ProjectLoader::new(&root);
-    loader.create_group(&folder).map_err(|e| e.to_string())?;
-    load_project_data(&loader)
+    let folder_path = loader.create_group(&label).map_err(|e| e.to_string())?;
+    let project = load_project_data(&loader)?;
+    Ok(CreateGroupResult { folder_path, project })
 }
 
+/// Rename a group. `old_folder` is the raw path (with prefix). `new_label` is the
+/// bare new name without prefix. The existing numeric prefix is preserved automatically.
 #[tauri::command]
 fn rename_group(
     state: State<'_, AppState>,
     old_folder: String,
-    new_folder: String,
+    new_label: String,
 ) -> Result<ProjectData, String> {
     let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
     let loader = ProjectLoader::new(&root);
+    // Preserve the numeric prefix on the last component of old_folder.
+    let last_component = old_folder.split('/').last().unwrap_or(&old_folder);
+    let (order, _) = parse_order_prefix(last_component);
+    let new_last = if order == u32::MAX {
+        new_label.clone()
+    } else {
+        format!("{order}-{new_label}")
+    };
+    let new_folder = if let Some(parent) = old_folder.rfind('/') {
+        format!("{}/{new_last}", &old_folder[..parent])
+    } else {
+        new_last
+    };
     loader.rename_group(&old_folder, &new_folder).map_err(|e| e.to_string())?;
     load_project_data(&loader)
 }
@@ -832,6 +894,50 @@ fn move_request(
         new_file_path: new_rel.to_string_lossy().replace('\\', "/"),
         project,
     })
+}
+
+/// Reorder a request within its folder. `new_position` is 0-based (clamped automatically).
+/// Renumbers all sibling files with consecutive 1..=N prefixes.
+/// Returns the new path of the moved request alongside the refreshed project.
+#[tauri::command]
+fn reorder_request(
+    state: State<'_, AppState>,
+    file_path: String,
+    new_position: usize,
+) -> Result<ReorderResult, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    let renames = loader
+        .reorder_request(Path::new(&file_path), new_position)
+        .map_err(|e| e.to_string())?;
+    // Determine the new path of the item that was moved.
+    let old_rel = PathBuf::from(&file_path);
+    let moved_path = renames
+        .get(&old_rel)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or(file_path); // unchanged if it wasn't renamed
+    let project = load_project_data(&loader)?;
+    Ok(ReorderResult { moved_path, project })
+}
+
+/// Reorder a group (directory) among its siblings. `folder` is the raw path relative to
+/// `requests/` (e.g. `"2-users"`). `new_position` is 0-based (clamped automatically).
+/// Renumbers all sibling directories with consecutive 1..=N prefixes.
+/// Returns the new path of the moved group alongside the refreshed project.
+#[tauri::command]
+fn reorder_group(
+    state: State<'_, AppState>,
+    folder: String,
+    new_position: usize,
+) -> Result<ReorderResult, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    let renames = loader
+        .reorder_group(&folder, new_position)
+        .map_err(|e| e.to_string())?;
+    let moved_path = renames.get(&folder).cloned().unwrap_or(folder);
+    let project = load_project_data(&loader)?;
+    Ok(ReorderResult { moved_path, project })
 }
 
 // ── Environment commands ───────────────────────────────────────────────────
@@ -950,6 +1056,8 @@ pub fn run() {
             delete_request,
             rename_request,
             move_request,
+            reorder_request,
+            reorder_group,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
