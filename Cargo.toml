@@ -1,3 +1,6 @@
 [workspace]
 members = ["src-tauri", "crates/api-almanac-model", "crates/api-almanac-runner", "crates/api-almanac-typesketch", "crates/api-almanac-export", "crates/api-almanac-tools", "crates/api-almanac-cli", "crates/api-almanac-store"]
 resolver = "2"
+
+[workspace.package]
+license = "MIT OR Apache-2.0"
