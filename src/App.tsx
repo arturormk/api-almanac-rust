@@ -6,7 +6,7 @@ import "./App.css";
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
 type BodyKind = "none" | "json" | "text" | "form";
-type RequestTab = "params" | "headers" | "body" | "notes";
+type RequestTab = "params" | "headers" | "body" | "cases" | "notes";
 type ResponseTab = "body" | "headers" | "sketch" | "tools";
 
 interface KvRow {
@@ -76,7 +76,7 @@ interface RequestData {
   body_kind?: string;
   notes?: string;
   tags: string[];
-  case_names: string[];
+  cases: Record<string, Record<string, string>>;
 }
 
 // ── Spot-check types ───────────────────────────────────────────────────────
@@ -851,7 +851,10 @@ export default function App() {
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [selectedEnvId, setSelectedEnvId] = useState<string | null>(null);
   const [selectedCase, setSelectedCase] = useState<string>("");
-  const [caseNames, setCaseNames] = useState<string[]>([]);
+  // cases: full case data for editing; editingCaseName: which case is open in the Cases tab
+  const [cases, setCases] = useState<Record<string, KvRow[]>>({});
+  const [editingCaseName, setEditingCaseName] = useState<string | null>(null);
+  const [newCaseInput, setNewCaseInput] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
 
@@ -895,6 +898,7 @@ export default function App() {
 
   const isProjectMode = selectedFilePath !== null;
   const showSave = isProjectMode || (project !== null && isNewRequest);
+  const caseNames = Object.keys(cases).sort();
   const activeRows = (rows: KvRow[]) => rows.filter((r) => r.enabled && r.key.trim());
   const toMap = (rows: KvRow[]) =>
     Object.fromEntries(activeRows(rows).map((r) => [r.key, r.value]));
@@ -916,19 +920,30 @@ export default function App() {
       setBodyContent("");
     }
     setNotes(data.notes ?? "");
-    setCaseNames(data.case_names ?? []);
+    const newCases: Record<string, KvRow[]> = {};
+    for (const [name, vars] of Object.entries(data.cases ?? {})) {
+      newCases[name] = mapToRows(vars);
+    }
+    setCases(newCases);
+    const firstCase = Object.keys(newCases).sort()[0] ?? null;
+    setEditingCaseName(firstCase);
+    setNewCaseInput("");
     setSelectedCase("");
     setIsDirty(false);
     setSaveStatus("idle");
   }
 
   function buildRequestData(overrides?: Partial<RequestData>): RequestData {
+    const casesMap: Record<string, Record<string, string>> = {};
+    for (const [name, rows] of Object.entries(cases)) {
+      casesMap[name] = toMap(rows);
+    }
     return {
       id: reqId, name: reqName || reqId, method, url,
       headers: toMap(reqHeaders), query: toMap(params),
       body_content: bodyKind !== "none" ? bodyContent : undefined,
       body_kind: bodyKind !== "none" ? bodyKind : undefined,
-      notes: notes.trim() || undefined, tags: [], case_names: [],
+      notes: notes.trim() || undefined, tags: [], cases: casesMap,
       ...overrides,
     };
   }
@@ -962,7 +977,7 @@ export default function App() {
     setBodyKind("none"); setBodyContent(""); setNotes("");
     setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null);
     setIsDirty(false); setSaveStatus("idle");
-    setCaseNames([]); setSelectedCase("");
+    setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
     setLastChecks([]); setLastCaptured({});
     setPlugins([]); setPluginResults({}); setPluginLoading({});
   }
@@ -996,7 +1011,7 @@ export default function App() {
     setBodyKind("none"); setBodyContent(""); setNotes("");
     setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null);
     setIsDirty(false); setSaveStatus("idle");
-    setCaseNames([]); setSelectedCase("");
+    setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
     setLastChecks([]); setLastCaptured({});
     setPluginResults({}); setPluginLoading({});
   }
@@ -1270,7 +1285,7 @@ export default function App() {
         {/* Request pane */}
         <div className="request-pane">
           <div className="tab-bar">
-            {(["params","headers","body","notes"] as RequestTab[]).map((t) => (
+            {(["params","headers","body","cases","notes"] as RequestTab[]).map((t) => (
               <button
                 key={t}
                 className={`tab${reqTab === t ? " tab-active" : ""}`}
@@ -1282,6 +1297,9 @@ export default function App() {
                 )}
                 {t === "headers" && activeRows(reqHeaders).length > 0 && (
                   <span className="tab-count">{activeRows(reqHeaders).length}</span>
+                )}
+                {t === "cases" && caseNames.length > 0 && (
+                  <span className="tab-count">{caseNames.length}</span>
                 )}
                 {t === "notes" && notes.trim() && (
                   <span className="notes-dot" title="Has notes" />
@@ -1322,6 +1340,94 @@ export default function App() {
                 {bodyKind !== "none" && !methodsWithBody.includes(method) && (
                   <p className="body-warn">Note: {method} requests typically don't include a body.</p>
                 )}
+              </div>
+            )}
+            {reqTab === "cases" && (
+              <div className="cases-editor">
+                <div className="case-list">
+                  {caseNames.map((name) => (
+                    <button
+                      key={name}
+                      className={`case-list-item${editingCaseName === name ? " active" : ""}`}
+                      onClick={() => setEditingCaseName(name)}
+                    >
+                      {name}
+                    </button>
+                  ))}
+                  <div className="case-add-row">
+                    <input
+                      className="case-add-input"
+                      placeholder="New case name"
+                      value={newCaseInput}
+                      onChange={(e) => setNewCaseInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          const slug = newCaseInput.trim();
+                          if (slug && !cases[slug]) {
+                            setCases((prev) => ({ ...prev, [slug]: [mkRow()] }));
+                            setEditingCaseName(slug);
+                            setNewCaseInput("");
+                            markDirty();
+                          }
+                        }
+                      }}
+                    />
+                    <button
+                      className="case-add-btn"
+                      onClick={() => {
+                        const slug = newCaseInput.trim();
+                        if (slug && !cases[slug]) {
+                          setCases((prev) => ({ ...prev, [slug]: [mkRow()] }));
+                          setEditingCaseName(slug);
+                          setNewCaseInput("");
+                          markDirty();
+                        }
+                      }}
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+                <div className="case-vars">
+                  {editingCaseName && cases[editingCaseName] ? (
+                    <>
+                      <div className="case-vars-header">
+                        <span className="case-vars-title">{editingCaseName}</span>
+                        <button
+                          className="case-delete-btn"
+                          title="Delete this case"
+                          onClick={() => {
+                            setCases((prev) => {
+                              const next = { ...prev };
+                              delete next[editingCaseName];
+                              return next;
+                            });
+                            const remaining = caseNames.filter((n) => n !== editingCaseName);
+                            setEditingCaseName(remaining[0] ?? null);
+                            markDirty();
+                          }}
+                        >
+                          Delete case
+                        </button>
+                      </div>
+                      <KvEditor
+                        rows={cases[editingCaseName]}
+                        onChange={(rows) => {
+                          setCases((prev) => ({ ...prev, [editingCaseName]: rows }));
+                          markDirty();
+                        }}
+                        keyPlaceholder="Variable"
+                        valuePlaceholder="Value"
+                      />
+                    </>
+                  ) : (
+                    <p className="cases-empty">
+                      {caseNames.length === 0
+                        ? "No cases yet. Add one to define named variations of this request."
+                        : "Select a case to edit its variables."}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
             {reqTab === "notes" && (

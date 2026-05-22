@@ -57,9 +57,8 @@ pub struct RequestData {
     pub notes: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Names of cases defined on this request (read-only; ignored on save).
     #[serde(default)]
-    pub case_names: Vec<String>,
+    pub cases: HashMap<String, HashMap<String, String>>,
 }
 
 #[derive(Serialize)]
@@ -649,9 +648,6 @@ fn request_def_to_data(req: RequestDef) -> RequestData {
         })
         .unwrap_or((None, None));
 
-    let mut case_names: Vec<String> = req.cases.keys().cloned().collect();
-    case_names.sort();
-
     RequestData {
         id: req.id,
         name: req.name,
@@ -663,7 +659,7 @@ fn request_def_to_data(req: RequestDef) -> RequestData {
         body_kind,
         notes: req.notes,
         tags: req.tags,
-        case_names,
+        cases: req.cases,
     }
 }
 
@@ -689,7 +685,7 @@ fn request_data_to_def(data: RequestData) -> RequestDef {
         headers: data.headers,
         query: data.query,
         body,
-        cases: Default::default(),
+        cases: data.cases,
         expect: None,
         capture: Default::default(),
         redact: Default::default(),

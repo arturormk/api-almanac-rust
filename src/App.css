@@ -785,6 +785,124 @@
   margin-bottom: 1px;
 }
 
+/* ── Cases editor ────────────────────────────────────────────────────────── */
+
+.cases-editor {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.case-list {
+  width: 180px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.case-list-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.case-list-item:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.05));
+}
+
+.case-list-item.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.case-add-row {
+  display: flex;
+  gap: 4px;
+  padding: 6px 4px 0;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.case-add-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-input, rgba(255,255,255,0.05));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 6px;
+  outline: none;
+}
+
+.case-add-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.case-add-btn:hover { opacity: 0.85; }
+
+.case-vars {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.case-vars-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 4px;
+}
+
+.case-vars-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.case-delete-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.case-delete-btn:hover {
+  border-color: #e55;
+  color: #e55;
+}
+
+.cases-empty {
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 20px 16px;
+  margin: 0;
+  line-height: 1.5;
+}
+
 /* ── Response pane ───────────────────────────────────────────────────────── */
 
 .response-pane {
