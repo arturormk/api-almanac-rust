@@ -72,6 +72,70 @@
   color: var(--accent);
 }
 
+.sidebar-recent-wrap {
+  position: relative;
+}
+
+.sidebar-recent-btn {
+  width: 100%;
+}
+
+.sidebar-recent-btn-open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.recent-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.recent-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  gap: 1px;
+}
+
+.recent-menu-item:last-child {
+  border-bottom: none;
+}
+
+.recent-menu-item:hover {
+  background: var(--bg-2);
+}
+
+.recent-item-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.recent-item-path {
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
 .sidebar-project-name {
   font-size: 11px;
   font-weight: 600;

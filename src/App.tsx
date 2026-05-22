@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -63,6 +63,11 @@ interface ProjectData {
   description?: string;
   requests: RequestSummary[];
   environments: EnvSummary[];
+}
+
+interface RecentProject {
+  path: string;
+  name: string;
 }
 
 interface RequestData {
@@ -715,12 +720,20 @@ function EnvironmentPanel({
 
 // ── Sidebar ────────────────────────────────────────────────────────────────
 
+function truncatePath(p: string): string {
+  const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
+  if (parts.length <= 2) return p;
+  return "…/" + parts.slice(-2).join("/");
+}
+
 function Sidebar({
   project,
   selectedFilePath,
   selectedEnvId,
+  recentProjects,
   onNewProject,
   onOpenProject,
+  onOpenRecent,
   onAddRequest,
   onSelectRequest,
   onEnvChange,
@@ -730,14 +743,28 @@ function Sidebar({
   project: ProjectData | null;
   selectedFilePath: string | null;
   selectedEnvId: string | null;
+  recentProjects: RecentProject[];
   onNewProject: () => void;
   onOpenProject: () => void;
+  onOpenRecent: (path: string) => void;
   onAddRequest: () => void;
   onSelectRequest: (filePath: string) => void;
   onEnvChange: (envId: string | null) => void;
   onRunChecks: () => void;
   onEditEnvs: () => void;
 }) {
+  const [showRecentMenu, setShowRecentMenu] = useState(false);
+  const recentWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showRecentMenu) return;
+    function handleClick(e: MouseEvent) {
+      if (recentWrapRef.current && !recentWrapRef.current.contains(e.target as Node)) {
+        setShowRecentMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showRecentMenu]);
   const folders = new Map<string, RequestSummary[]>();
   if (project) {
     for (const req of project.requests) {
@@ -759,6 +786,32 @@ function Sidebar({
           <button className="sidebar-btn" onClick={onOpenProject} title="Open existing project">Open</button>
           <button className="sidebar-btn" onClick={onNewProject} title="Create new project">New</button>
         </div>
+        {recentProjects.length > 0 && (
+          <div className="sidebar-recent-wrap" ref={recentWrapRef}>
+            <button
+              className={`sidebar-btn sidebar-recent-btn${showRecentMenu ? " sidebar-recent-btn-open" : ""}`}
+              onClick={() => setShowRecentMenu((v) => !v)}
+              title="Open a recent project"
+            >
+              Open Recent ▾
+            </button>
+            {showRecentMenu && (
+              <div className="recent-menu">
+                {recentProjects.map((rp) => (
+                  <button
+                    key={rp.path}
+                    className="recent-menu-item"
+                    onClick={() => { setShowRecentMenu(false); onOpenRecent(rp.path); }}
+                    title={rp.path}
+                  >
+                    <span className="recent-item-name">{rp.name}</span>
+                    <span className="recent-item-path">{truncatePath(rp.path)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {project && <div className="sidebar-project-name">{project.name}</div>}
       </div>
 
@@ -895,6 +948,7 @@ export default function App() {
   const [pluginLoading, setPluginLoading] = useState<Record<string, boolean>>({});
   const [showSpotCheck, setShowSpotCheck] = useState(false);
   const [showEnvEditor, setShowEnvEditor] = useState(false);
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
 
   const isProjectMode = selectedFilePath !== null;
   const showSave = isProjectMode || (project !== null && isNewRequest);
@@ -969,6 +1023,15 @@ export default function App() {
     } catch { /* no project or no tools dir — ok */ }
   }
 
+  async function loadRecentProjects() {
+    try {
+      const list = await invoke<RecentProject[]>("list_recent_projects");
+      setRecentProjects(list);
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => { loadRecentProjects(); }, []);
+
   function resetToAdhoc() {
     setSelectedFilePath(null);
     setIsNewRequest(false);
@@ -989,6 +1052,7 @@ export default function App() {
       const data = await invoke<ProjectData>("open_project");
       setProject(data); setSelectedEnvId(null); resetToAdhoc();
       await reloadPlugins();
+      await loadRecentProjects();
     } catch (e) {
       if (String(e) !== "cancelled") setReqError(`Failed to open project: ${e}`);
     }
@@ -999,8 +1063,20 @@ export default function App() {
       const data = await invoke<ProjectData>("create_project");
       setProject(data); setSelectedEnvId(null); resetToAdhoc();
       await reloadPlugins();
+      await loadRecentProjects();
     } catch (e) {
       if (String(e) !== "cancelled") setReqError(`Failed to create project: ${e}`);
+    }
+  }
+
+  async function openRecentProject(path: string) {
+    try {
+      const data = await invoke<ProjectData>("open_recent_project", { path });
+      setProject(data); setSelectedEnvId(null); resetToAdhoc();
+      await reloadPlugins();
+      await loadRecentProjects();
+    } catch (e) {
+      setReqError(`Failed to open project: ${e}`);
     }
   }
 
@@ -1172,8 +1248,10 @@ export default function App() {
         project={project}
         selectedFilePath={selectedFilePath}
         selectedEnvId={selectedEnvId}
+        recentProjects={recentProjects}
         onNewProject={newProject}
         onOpenProject={openProject}
+        onOpenRecent={openRecentProject}
         onAddRequest={addNewRequest}
         onSelectRequest={selectRequest}
         onEnvChange={setSelectedEnvId}

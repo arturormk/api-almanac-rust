@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 
 // ── App state ──────────────────────────────────────────────────────────────
 
@@ -64,6 +64,12 @@ pub struct RequestData {
 #[derive(Serialize)]
 pub struct EnvSummary {
     pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentProject {
+    pub path: String,
     pub name: String,
 }
 
@@ -155,6 +161,46 @@ fn check_to_item(c: Check) -> CheckItem {
     }
 }
 
+// ── Recent-projects helpers ────────────────────────────────────────────────
+
+fn recent_projects_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join("recent_projects.json"))
+}
+
+fn load_recent(app: &tauri::AppHandle) -> Vec<RecentProject> {
+    let path = match recent_projects_path(app) {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn save_recent(app: &tauri::AppHandle, list: &[RecentProject]) {
+    let path = match recent_projects_path(app) {
+        Some(p) => p,
+        None => return,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(list) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn push_recent(app: &tauri::AppHandle, path: &std::path::Path, name: &str) {
+    let path_str = path.to_string_lossy().into_owned();
+    let mut list = load_recent(app);
+    list.retain(|r| r.path != path_str);
+    list.insert(0, RecentProject { path: path_str, name: name.to_string() });
+    list.truncate(12);
+    save_recent(app, &list);
+}
+
 // ── Commands ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -179,6 +225,7 @@ async fn open_project(
     };
     let loader = ProjectLoader::new(&path);
     let data = load_project_data(&loader)?;
+    push_recent(&app, &path, &data.name);
     *state.project_path.lock().unwrap() = Some(path);
     Ok(data)
 }
@@ -214,6 +261,7 @@ async fn create_project(
     }
     let loader = ProjectLoader::new(&path);
     let data = load_project_data(&loader)?;
+    push_recent(&app, &path, &data.name);
     *state.project_path.lock().unwrap() = Some(path);
     Ok(data)
 }
@@ -754,6 +802,30 @@ fn delete_environment(state: State<'_, AppState>, env_id: String) -> Result<Proj
     load_project_data(&loader).map_err(|e| e.to_string())
 }
 
+// ── Recent-project commands ────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_recent_projects(app: tauri::AppHandle) -> Vec<RecentProject> {
+    load_recent(&app)
+}
+
+#[tauri::command]
+async fn open_recent_project(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<ProjectData, String> {
+    let pb = std::path::PathBuf::from(&path);
+    if !pb.exists() {
+        return Err(format!("Project path no longer exists: {path}"));
+    }
+    let loader = ProjectLoader::new(&pb);
+    let data = load_project_data(&loader)?;
+    push_recent(&app, &pb, &data.name);
+    *state.project_path.lock().unwrap() = Some(pb);
+    Ok(data)
+}
+
 // ── Entry point ────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -764,7 +836,6 @@ pub fn run() {
             session_vars: Mutex::new(HashMap::new()),
         })
         .setup(|app| {
-            use tauri::Manager;
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(icon) = app.default_window_icon() {
                     let _ = window.set_icon(icon.clone());
@@ -796,6 +867,8 @@ pub fn run() {
             save_environment,
             create_environment,
             delete_environment,
+            list_recent_projects,
+            open_recent_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
