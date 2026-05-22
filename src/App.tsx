@@ -344,11 +344,11 @@ function ChecksPanel({
 function SpotCheckPanel({
   project,
   selectedEnvId,
-  onClose,
+  onRunComplete,
 }: {
   project: ProjectData;
   selectedEnvId: string | null;
-  onClose: () => void;
+  onRunComplete: (summary: { passed: number; failed: number; errored: number }) => void;
 }) {
   const [running, setRunning] = useState(false);
   const [current, setCurrent] = useState(0);
@@ -422,6 +422,10 @@ function SpotCheckPanel({
 
     setTotalMs(Date.now() - wallStart);
     setRunning(false);
+    const finalPassed = acc.filter((r) => !r.error && (r.checks.length === 0 || r.checks.every((c) => c.passed))).length;
+    const finalFailed = acc.filter((r) => !r.error && r.checks.some((c) => !c.passed)).length;
+    const finalErrored = acc.filter((r) => !!r.error).length;
+    onRunComplete({ passed: finalPassed, failed: finalFailed, errored: finalErrored });
   }
 
   async function exportReport() {
@@ -449,7 +453,6 @@ function SpotCheckPanel({
       <div className="spot-check-header">
         <span className="spot-check-title">Spot Check</span>
         {envName && <span className="spot-check-env">{envName}</span>}
-        <button className="spot-check-close" onClick={onClose} title="Close">×</button>
       </div>
 
       <div className="spot-check-body">
@@ -546,11 +549,9 @@ function SpotCheckPanel({
 
 function EnvironmentPanel({
   selectedEnvId,
-  onClose,
   onProjectChange,
 }: {
   selectedEnvId: string | null;
-  onClose: () => void;
   onProjectChange: (project: ProjectData, newEnvId: string | null) => void;
 }) {
   const [envs, setEnvs] = useState<EnvironmentData[]>([]);
@@ -656,7 +657,6 @@ function EnvironmentPanel({
     <div className="env-panel">
       <div className="env-panel-header">
         <span className="env-panel-title">Environments</span>
-        <button className="env-panel-close" onClick={onClose} title="Close">×</button>
       </div>
 
       <div className="env-panel-body">
@@ -1561,8 +1561,8 @@ export default function App() {
   const [plugins, setPlugins] = useState<PluginManifest[]>([]);
   const [pluginResults, setPluginResults] = useState<Record<string, PluginOutput>>({});
   const [pluginLoading, setPluginLoading] = useState<Record<string, boolean>>({});
-  const [showSpotCheck, setShowSpotCheck] = useState(false);
-  const [showEnvEditor, setShowEnvEditor] = useState(false);
+  const [mainPane, setMainPane] = useState<'request' | 'checks' | 'environments'>('request');
+  const [spotCheckSummary, setSpotCheckSummary] = useState<{ passed: number; failed: number; errored: number } | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
 
   const isProjectMode = selectedFilePath !== null;
@@ -1658,6 +1658,7 @@ export default function App() {
     setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
     setLastChecks([]); setLastCaptured({});
     setPlugins([]); setPluginResults({}); setPluginLoading({});
+    setSpotCheckSummary(null); setMainPane('request');
   }
 
   // ── Project actions ───────────────────────────────────────────────────────
@@ -1826,6 +1827,7 @@ export default function App() {
   }
 
   async function selectRequest(filePath: string) {
+    setMainPane('request');
     setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setIsNewRequest(false);
     setLastChecks([]); setLastCaptured({});
     setPluginResults({}); setPluginLoading({});
@@ -1988,9 +1990,9 @@ export default function App() {
         onAddRequest={addNewRequest}
         onAddRequestToFolder={addNewRequestToFolder}
         onSelectRequest={selectRequest}
-        onEnvChange={setSelectedEnvId}
-        onRunChecks={() => { setShowSpotCheck(true); setShowEnvEditor(false); setSelectedFilePath(null); setIsNewRequest(false); }}
-        onEditEnvs={() => { setShowEnvEditor(true); setShowSpotCheck(false); setSelectedFilePath(null); setIsNewRequest(false); }}
+        onEnvChange={(envId) => { setSelectedEnvId(envId); setSpotCheckSummary(null); }}
+        onRunChecks={() => setMainPane('checks')}
+        onEditEnvs={() => setMainPane('environments')}
         onCreateGroup={createGroup}
         onRenameGroup={renameGroup}
         onDeleteGroup={deleteGroup}
@@ -2003,22 +2005,56 @@ export default function App() {
       />
 
       <div className="main-area">
-        {showEnvEditor ? (
-          <EnvironmentPanel
-            selectedEnvId={selectedEnvId}
-            onClose={() => setShowEnvEditor(false)}
-            onProjectChange={(newProject, newEnvId) => {
-              setProject(newProject);
-              if (newEnvId !== undefined) setSelectedEnvId(newEnvId);
-            }}
-          />
-        ) : showSpotCheck && project ? (
-          <SpotCheckPanel
-            project={project}
-            selectedEnvId={selectedEnvId}
-            onClose={() => setShowSpotCheck(false)}
-          />
-        ) : (
+        {project && (
+          <div className="main-area-tabs">
+            <button
+              className={`main-area-tab${mainPane === 'request' ? ' active' : ''}`}
+              onClick={() => setMainPane('request')}
+            >
+              Request{isDirty ? ' ●' : ''}
+            </button>
+            <button
+              className={`main-area-tab${mainPane === 'checks' ? ' active' : ''}`}
+              onClick={() => setMainPane('checks')}
+            >
+              {spotCheckSummary
+                ? `Checks · ${spotCheckSummary.passed}/${spotCheckSummary.passed + spotCheckSummary.failed + spotCheckSummary.errored}`
+                : 'Checks'}
+            </button>
+            <button
+              className={`main-area-tab${mainPane === 'environments' ? ' active' : ''}`}
+              onClick={() => setMainPane('environments')}
+            >
+              Environments
+            </button>
+          </div>
+        )}
+
+        <div className="main-area-panel" style={{display: mainPane === 'environments' && !!project ? 'flex' : 'none'}}>
+          {project && (
+            <EnvironmentPanel
+              key={project.id}
+              selectedEnvId={selectedEnvId}
+              onProjectChange={(newProject, newEnvId) => {
+                setProject(newProject);
+                if (newEnvId !== undefined) setSelectedEnvId(newEnvId);
+              }}
+            />
+          )}
+        </div>
+
+        <div className="main-area-panel" style={{display: mainPane === 'checks' && !!project ? 'flex' : 'none'}}>
+          {project && (
+            <SpotCheckPanel
+              key={`${project.id}-${selectedEnvId ?? 'none'}`}
+              project={project}
+              selectedEnvId={selectedEnvId}
+              onRunComplete={(summary) => setSpotCheckSummary(summary)}
+            />
+          )}
+        </div>
+
+        <div className="main-area-panel" style={{display: mainPane === 'request' ? 'flex' : 'none'}}>
           <>
         {/* New-request name bar */}
         {isNewRequest && (
@@ -2410,7 +2446,7 @@ export default function App() {
           )}
         </div>
           </>
-        )}
+        </div>
       </div>
     </div>
   );
