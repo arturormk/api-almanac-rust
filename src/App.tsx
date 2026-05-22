@@ -22,7 +22,7 @@ import "./App.css";
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
 type BodyKind = "none" | "json" | "text" | "form";
-type RequestTab = "params" | "headers" | "body" | "cases" | "notes";
+type RequestTab = "params" | "headers" | "body" | "cases" | "notes" | "captures";
 type ResponseTab = "body" | "headers" | "sketch" | "tools";
 
 interface KvRow {
@@ -123,6 +123,7 @@ interface RequestData {
   notes?: string;
   tags: string[];
   cases: Record<string, Record<string, string>>;
+  capture?: Record<string, string>;
 }
 
 // ── Spot-check types ───────────────────────────────────────────────────────
@@ -239,6 +240,80 @@ function KvEditor({
           <button className="kv-remove" onClick={() => remove(row.id)} title="Remove">×</button>
         </div>
       ))}
+      <button className="kv-add" onClick={() => onChange([...rows, mkRow()])}>+ Add</button>
+    </div>
+  );
+}
+
+// ── Captures editor ────────────────────────────────────────────────────────
+
+function CapturesEditor({
+  rows,
+  onChange,
+  liveValues,
+}: {
+  rows: KvRow[];
+  onChange: (rows: KvRow[]) => void;
+  liveValues: Record<string, string>;
+}) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggle = (id: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  const update = (id: number, field: keyof KvRow, val: string | boolean) =>
+    onChange(rows.map((r) => (r.id === id ? { ...r, [field]: val } : r)));
+  const remove = (id: number) => {
+    setExpanded((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    onChange(rows.filter((r) => r.id !== id));
+  };
+  return (
+    <div className="kv-editor">
+      {rows.map((row) => {
+        const live = row.key ? liveValues[row.key] : undefined;
+        const isOpen = expanded.has(row.id);
+        const eyeTitle = live
+          ? (live.length > 80 ? `${live.slice(0, 80)}… (${live.length} chars)` : live)
+          : "No value captured yet";
+        return (
+          <div key={row.id} className="capture-row-wrap">
+            <div className="kv-row">
+              <input
+                type="checkbox"
+                checked={row.enabled}
+                onChange={(e) => update(row.id, "enabled", e.target.checked)}
+                title="Enable"
+              />
+              <input
+                className="kv-input"
+                placeholder="Variable name"
+                value={row.key}
+                onChange={(e) => update(row.id, "key", e.target.value)}
+              />
+              <input
+                className="kv-input"
+                placeholder="Path (e.g. json.id, headers.x-token)"
+                value={row.value}
+                onChange={(e) => update(row.id, "value", e.target.value)}
+              />
+              <button
+                className={`capture-eye${live ? " has-value" : ""}${isOpen ? " open" : ""}`}
+                title={eyeTitle}
+                disabled={!live}
+                onClick={() => toggle(row.id)}
+              >👁</button>
+              <button className="kv-remove" onClick={() => remove(row.id)} title="Remove">×</button>
+            </div>
+            {isOpen && live && (
+              <div className="capture-expanded">
+                <code className="capture-value">{live}</code>
+              </div>
+            )}
+          </div>
+        );
+      })}
       <button className="kv-add" onClick={() => onChange([...rows, mkRow()])}>+ Add</button>
     </div>
   );
@@ -1544,6 +1619,7 @@ export default function App() {
   const [url, setUrl] = useState("");
   const [params, setParams] = useState<KvRow[]>([mkRow()]);
   const [reqHeaders, setReqHeaders] = useState<KvRow[]>([mkRow()]);
+  const [captures, setCaptures] = useState<KvRow[]>([mkRow()]);
   const [bodyKind, setBodyKind] = useState<BodyKind>("none");
   const [bodyContent, setBodyContent] = useState("");
 
@@ -1593,6 +1669,7 @@ export default function App() {
       setBodyContent("");
     }
     setNotes(data.notes ?? "");
+    setCaptures(mapToRows(data.capture ?? {}));
     const newCases: Record<string, KvRow[]> = {};
     for (const [name, vars] of Object.entries(data.cases ?? {})) {
       newCases[name] = mapToRows(vars);
@@ -1617,6 +1694,7 @@ export default function App() {
       body_content: bodyKind !== "none" ? bodyContent : undefined,
       body_kind: bodyKind !== "none" ? bodyKind : undefined,
       notes: notes.trim() || undefined, tags: [], cases: casesMap,
+      capture: toMap(captures),
       ...overrides,
     };
   }
@@ -1656,7 +1734,7 @@ export default function App() {
     setReqUid(""); setReqId(""); setReqName("");
     setIsNewRequest(false);
     setNewReqDisplayName(""); setNewReqFolder("");
-    setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]);
+    setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]); setCaptures([mkRow()]);
     setBodyKind("none"); setBodyContent(""); setNotes("");
     setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null);
     setIsDirty(false); setSaveStatus("idle");
@@ -2151,7 +2229,7 @@ export default function App() {
         {/* Request pane */}
         <div className="request-pane">
           <div className="tab-bar">
-            {(["params","headers","body","cases","notes"] as RequestTab[]).map((t) => (
+            {(["params","headers","body","cases","notes","captures"] as RequestTab[]).map((t) => (
               <button
                 key={t}
                 className={`tab${reqTab === t ? " tab-active" : ""}`}
@@ -2169,6 +2247,9 @@ export default function App() {
                 )}
                 {t === "notes" && notes.trim() && (
                   <span className="notes-dot" title="Has notes" />
+                )}
+                {t === "captures" && activeRows(captures).length > 0 && (
+                  <span className="tab-count">{activeRows(captures).length}</span>
                 )}
               </button>
             ))}
@@ -2308,6 +2389,16 @@ export default function App() {
                 {notes.trim() && isProjectMode && (
                   <p className="notes-hint">Notes are included when exporting to Markdown.</p>
                 )}
+              </div>
+            )}
+            {reqTab === "captures" && (
+              <div className="captures-editor">
+                <CapturesEditor
+                  rows={captures}
+                  onChange={(v) => { setCaptures(v); if (isProjectMode) markDirty(); }}
+                  liveValues={lastCaptured}
+                />
+                <p className="captures-hint">Supported paths: <code>json.field</code> · <code>json.nested.array[0]</code> · <code>headers.x-header-name</code></p>
               </div>
             )}
           </div>

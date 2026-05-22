@@ -95,6 +95,8 @@ pub struct RequestData {
     pub tags: Vec<String>,
     #[serde(default)]
     pub cases: HashMap<String, HashMap<String, String>>,
+    #[serde(default)]
+    pub capture: HashMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -776,6 +778,7 @@ fn request_def_to_data(req: RequestDef) -> RequestData {
         notes: req.notes,
         tags: req.tags,
         cases: req.cases,
+        capture: req.capture,
     }
 }
 
@@ -804,7 +807,7 @@ fn request_data_to_def(data: RequestData) -> RequestDef {
         body,
         cases: data.cases,
         expect: None,
-        capture: Default::default(),
+        capture: data.capture,
         redact: Default::default(),
         notes: data.notes,
         tags: data.tags,
