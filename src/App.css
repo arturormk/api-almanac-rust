@@ -1140,7 +1140,7 @@
 
 .expects-label {
   font-size: 12px;
-  color: var(--color-muted);
+  color: var(--text-dim);
   white-space: nowrap;
 }
 
@@ -1159,7 +1159,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--color-muted);
+  color: var(--text-dim);
 }
 
 /* ── Cases editor ────────────────────────────────────────────────────────── */
@@ -1998,6 +1998,64 @@
   color: var(--text-dim);
   margin: 0;
   line-height: 1.5;
+}
+
+.env-editor-parent {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.env-inherited {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0 2px;
+}
+
+.env-inherited-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.env-inherited-overridden {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+
+.env-inherited-key {
+  font-family: var(--font-mono);
+  color: var(--text);
+  min-width: 110px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.env-inherited-value {
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.env-inherited-badge {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .env-secret-hint code {

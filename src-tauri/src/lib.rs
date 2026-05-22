@@ -3,7 +3,7 @@ use api_almanac_store::{apply_redaction, load_latest_response, now_iso8601, save
 use api_almanac_tools as tools;
 use api_almanac_typesketch as typesketch;
 use api_almanac_model::{
-    generate_uid, parse_order_prefix, strip_order_prefix,
+    generate_uid, parse_order_prefix, resolve_env_vars, strip_order_prefix,
     AlmanacProject, BodyKind, Environment, Expect, ProjectLoader, RequestDef, ResolvedBody, ResolvedRequest,
     VariableResolver,
 };
@@ -129,6 +129,8 @@ pub struct RecentProject {
 pub struct EnvironmentData {
     pub id: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     #[serde(default)]
     pub vars: HashMap<String, String>,
 }
@@ -382,9 +384,11 @@ async fn run_project_request(
         .as_deref()
         .and_then(|name| entry.request.cases.get(name));
 
-    // Build resolver: env vars → case vars → session vars (session wins)
+    // Build resolver: env vars (with inheritance) → case vars → session vars (session wins)
     let mut vars: HashMap<String, String> = env
-        .map(|e| e.vars.clone())
+        .map(|e| resolve_env_vars(&e.id, &environments))
+        .transpose()
+        .map_err(|e| e)?
         .unwrap_or_default();
     if let Some(c) = case {
         vars.extend(c.clone());
@@ -1008,14 +1012,14 @@ fn list_environments(state: State<'_, AppState>) -> Result<Vec<EnvironmentData>,
     let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
     let loader = ProjectLoader::new(&root);
     let envs = loader.load_environments().map_err(|e| e.to_string())?;
-    Ok(envs.into_iter().map(|e| EnvironmentData { id: e.id, name: e.name, vars: e.vars }).collect())
+    Ok(envs.into_iter().map(|e| EnvironmentData { id: e.id, name: e.name, parent: e.parent, vars: e.vars }).collect())
 }
 
 #[tauri::command]
 fn save_environment(state: State<'_, AppState>, data: EnvironmentData) -> Result<ProjectData, String> {
     let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
     let loader = ProjectLoader::new(&root);
-    let env = Environment { id: data.id, name: data.name, vars: data.vars };
+    let env = Environment { id: data.id, name: data.name, parent: data.parent, vars: data.vars };
     loader.save_environment(&env).map_err(|e| e.to_string())?;
     load_project_data(&loader).map_err(|e| e.to_string())
 }
@@ -1031,7 +1035,7 @@ fn create_environment(state: State<'_, AppState>, name: String) -> Result<Projec
         id = format!("{base_id}-{n}");
         n += 1;
     }
-    let env = Environment { id, name, vars: Default::default() };
+    let env = Environment { id, name, parent: None, vars: Default::default() };
     loader.save_environment(&env).map_err(|e| e.to_string())?;
     load_project_data(&loader).map_err(|e| e.to_string())
 }

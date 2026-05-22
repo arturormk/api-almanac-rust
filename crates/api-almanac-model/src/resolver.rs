@@ -167,6 +167,7 @@ mod tests {
         Environment {
             id: "test".into(),
             name: "Test".into(),
+            parent: None,
             vars: pairs
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))

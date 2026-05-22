@@ -161,6 +161,7 @@ interface SpotCheckReport {
 interface EnvironmentData {
   id: string;
   name: string;
+  parent?: string;
   vars: Record<string, string>;
 }
 
@@ -690,6 +691,18 @@ function SpotCheckPanel({
 
 // ── Environment panel ─────────────────────────────────────────────────────
 
+function isDescendant(candidateId: string, ancestorId: string, envs: EnvironmentData[]): boolean {
+  let cur: string | undefined = candidateId;
+  const seen = new Set<string>();
+  while (cur) {
+    if (seen.has(cur)) return false;
+    seen.add(cur);
+    if (cur === ancestorId) return true;
+    cur = envs.find((e) => e.id === cur)?.parent;
+  }
+  return false;
+}
+
 function EnvironmentPanel({
   selectedEnvId,
   onProjectChange,
@@ -700,6 +713,7 @@ function EnvironmentPanel({
   const [envs, setEnvs] = useState<EnvironmentData[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [editParentId, setEditParentId] = useState<string | null>(null);
   const [editVars, setEditVars] = useState<KvRow[]>([mkRow()]);
   const [isDirty, setIsDirty] = useState(false);
   const [addingNew, setAddingNew] = useState(false);
@@ -716,6 +730,7 @@ function EnvironmentPanel({
           const first = data[0];
           setEditingId(first.id);
           setEditName(first.name);
+          setEditParentId(first.parent ?? null);
           setEditVars(Object.keys(first.vars).length > 0 ? mapToRows(first.vars) : [mkRow()]);
         }
       })
@@ -729,6 +744,7 @@ function EnvironmentPanel({
     const fresh = list.find((e) => e.id === env.id) ?? env;
     setEditingId(fresh.id);
     setEditName(fresh.name);
+    setEditParentId(fresh.parent ?? null);
     setEditVars(Object.keys(fresh.vars).length > 0 ? mapToRows(fresh.vars) : [mkRow()]);
     setIsDirty(false);
     setError(null);
@@ -741,6 +757,7 @@ function EnvironmentPanel({
       const data: EnvironmentData = {
         id: editingId,
         name: editName.trim() || editingId,
+        parent: editParentId ?? undefined,
         vars: Object.fromEntries(
           editVars.filter((r) => r.enabled && r.key.trim()).map((r) => [r.key, r.value])
         ),
@@ -788,6 +805,7 @@ function EnvironmentPanel({
       } else {
         setEditingId(null);
         setEditName("");
+        setEditParentId(null);
         setEditVars([mkRow()]);
       }
       onProjectChange(newProject, deletedId === selectedEnvId ? null : selectedEnvId);
@@ -855,6 +873,20 @@ function EnvironmentPanel({
                 <span className="env-editor-id" title="Environment ID (filename)">{editingId}</span>
               </div>
 
+              <div className="env-editor-name-row">
+                <label className="env-editor-label">Inherits from</label>
+                <select
+                  className="env-editor-parent"
+                  value={editParentId ?? ""}
+                  onChange={(e) => { setEditParentId(e.target.value || null); setIsDirty(true); }}
+                >
+                  <option value="">(none)</option>
+                  {envs
+                    .filter((e) => e.id !== editingId && !isDescendant(e.id, editingId!, envs))
+                    .map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </select>
+              </div>
+
               <div className="env-vars-label">Variables</div>
               <div className="env-vars-editor">
                 <KvEditor
@@ -864,6 +896,39 @@ function EnvironmentPanel({
                   valuePlaceholder="Value or {{secret.ENV_VAR}}"
                 />
               </div>
+
+              {(() => {
+                if (!editParentId) return null;
+                const ownKeys = new Set(editVars.filter((r) => r.enabled && r.key.trim()).map((r) => r.key));
+                const merged: Record<string, string> = {};
+                const chain: string[] = [];
+                let cur: string | undefined = editParentId;
+                const visited = new Set<string>();
+                while (cur && !visited.has(cur)) {
+                  visited.add(cur); chain.push(cur);
+                  cur = envs.find((e) => e.id === cur)?.parent;
+                }
+                for (const id of chain.reverse()) {
+                  const env = envs.find((e) => e.id === id);
+                  if (env) Object.assign(merged, env.vars);
+                }
+                const rows = Object.entries(merged);
+                if (rows.length === 0) return null;
+                return (
+                  <div className="env-inherited">
+                    <div className="env-vars-label">
+                      Inherited from <em>{envs.find((e) => e.id === editParentId)?.name ?? editParentId}</em>
+                    </div>
+                    {rows.map(([k, v]) => (
+                      <div key={k} className={`env-inherited-row${ownKeys.has(k) ? " env-inherited-overridden" : ""}`}>
+                        <span className="env-inherited-key">{k}</span>
+                        <span className="env-inherited-value">{v}</span>
+                        {ownKeys.has(k) && <span className="env-inherited-badge">overridden</span>}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
 
               {error && <div className="response-error">{error}</div>}
 
@@ -1833,7 +1898,9 @@ export default function App() {
   async function openProject() {
     try {
       const data = await invoke<ProjectData>("open_project");
-      setProject(data); setSelectedEnvId(null); resetToAdhoc();
+      const storedEnv = localStorage.getItem(`almanac.lastEnv.${data.id}`);
+      const restoredEnvId = (storedEnv && data.environments.some(e => e.id === storedEnv)) ? storedEnv : null;
+      setProject(data); setSelectedEnvId(restoredEnvId); resetToAdhoc();
       await reloadPlugins();
       await loadRecentProjects();
     } catch (e) {
@@ -1855,7 +1922,9 @@ export default function App() {
   async function openRecentProject(path: string) {
     try {
       const data = await invoke<ProjectData>("open_recent_project", { path });
-      setProject(data); setSelectedEnvId(null); resetToAdhoc();
+      const storedEnv = localStorage.getItem(`almanac.lastEnv.${data.id}`);
+      const restoredEnvId = (storedEnv && data.environments.some(e => e.id === storedEnv)) ? storedEnv : null;
+      setProject(data); setSelectedEnvId(restoredEnvId); resetToAdhoc();
       await reloadPlugins();
       await loadRecentProjects();
     } catch (e) {
@@ -2161,7 +2230,14 @@ export default function App() {
         onAddRequest={addNewRequest}
         onAddRequestToFolder={addNewRequestToFolder}
         onSelectRequest={selectRequest}
-        onEnvChange={(envId) => { setSelectedEnvId(envId); setSpotCheckSummary(null); }}
+        onEnvChange={(envId) => {
+          setSelectedEnvId(envId);
+          setSpotCheckSummary(null);
+          if (project) {
+            if (envId) localStorage.setItem(`almanac.lastEnv.${project.id}`, envId);
+            else localStorage.removeItem(`almanac.lastEnv.${project.id}`);
+          }
+        }}
         onRunChecks={() => setMainPane('checks')}
         onEditEnvs={() => setMainPane('environments')}
         onCreateGroup={createGroup}

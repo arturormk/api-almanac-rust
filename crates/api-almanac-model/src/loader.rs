@@ -451,6 +451,47 @@ impl ProjectLoader {
     }
 }
 
+// ── Environment inheritance ────────────────────────────────────────────────
+
+/// Resolve the effective variable set for `env_id` by walking the parent chain.
+/// Parent vars are laid down first; child vars override them. Case and session
+/// vars are NOT included here — those are applied later in the caller.
+///
+/// Returns `Err` if a parent id is not found in `all_envs` or if a cycle is detected.
+pub fn resolve_env_vars(
+    env_id: &str,
+    all_envs: &[Environment],
+) -> Result<HashMap<String, String>, String> {
+    // Walk from the requested env up to the root, collecting ids in child→root order.
+    let mut chain: Vec<&str> = Vec::new();
+    let mut current_id = env_id;
+    loop {
+        if chain.contains(&current_id) {
+            chain.push(current_id);
+            return Err(format!(
+                "environment inheritance cycle: {}",
+                chain.join(" → ")
+            ));
+        }
+        let env = all_envs
+            .iter()
+            .find(|e| e.id == current_id)
+            .ok_or_else(|| format!("parent environment '{}' not found", current_id))?;
+        chain.push(current_id);
+        match &env.parent {
+            Some(p) => current_id = p.as_str(),
+            None => break,
+        }
+    }
+    // Replay root→leaf so child vars win.
+    let mut merged = HashMap::new();
+    for id in chain.iter().rev() {
+        let env = all_envs.iter().find(|e| e.id == *id).unwrap();
+        merged.extend(env.vars.clone());
+    }
+    Ok(merged)
+}
+
 // ── Private helpers ────────────────────────────────────────────────────────
 
 /// Generate a copy display name: `"{name} copy"`, `"{name} copy 2"`, etc.
@@ -857,6 +898,7 @@ mod tests {
         let env = crate::environment::Environment {
             id: "local".into(),
             name: "Local".into(),
+            parent: None,
             vars: [("base_url".into(), "http://localhost:8000".into())].into_iter().collect(),
         };
         loader.save_environment(&env).unwrap();
@@ -875,6 +917,7 @@ mod tests {
         let env = crate::environment::Environment {
             id: "staging".into(),
             name: "Staging".into(),
+            parent: None,
             vars: Default::default(),
         };
         loader.save_environment(&env).unwrap();
@@ -1140,5 +1183,66 @@ mod tests {
         assert!(tmp.path().join("requests/1-users").exists());
         assert!(tmp.path().join("requests/2-auth").exists());
         assert_eq!(renames.len(), 2);
+    }
+
+    // ── resolve_env_vars ──────────────────────────────────────────────────
+
+    fn mk_env(id: &str, parent: Option<&str>, vars: &[(&str, &str)]) -> Environment {
+        Environment {
+            id: id.into(),
+            name: id.into(),
+            parent: parent.map(str::to_owned),
+            vars: vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        }
+    }
+
+    #[test]
+    fn resolve_env_vars_no_parent() {
+        let envs = vec![mk_env("local", None, &[("base_url", "http://localhost")])];
+        let vars = resolve_env_vars("local", &envs).unwrap();
+        assert_eq!(vars["base_url"], "http://localhost");
+    }
+
+    #[test]
+    fn resolve_env_vars_child_overrides_parent() {
+        let envs = vec![
+            mk_env("base", None, &[("tenant", "acme"), ("base_url", "https://api.example.com")]),
+            mk_env("local", Some("base"), &[("base_url", "http://localhost")]),
+        ];
+        let vars = resolve_env_vars("local", &envs).unwrap();
+        assert_eq!(vars["tenant"], "acme");            // inherited
+        assert_eq!(vars["base_url"], "http://localhost"); // overridden
+    }
+
+    #[test]
+    fn resolve_env_vars_three_level_chain() {
+        let envs = vec![
+            mk_env("root",   None,          &[("a", "1"), ("b", "1"), ("c", "1")]),
+            mk_env("mid",    Some("root"),   &[("b", "2"), ("c", "2")]),
+            mk_env("leaf",   Some("mid"),    &[("c", "3")]),
+        ];
+        let vars = resolve_env_vars("leaf", &envs).unwrap();
+        assert_eq!(vars["a"], "1"); // from root
+        assert_eq!(vars["b"], "2"); // root overridden by mid
+        assert_eq!(vars["c"], "3"); // mid overridden by leaf
+    }
+
+    #[test]
+    fn resolve_env_vars_missing_parent_returns_err() {
+        let envs = vec![mk_env("staging", Some("nonexistent"), &[])];
+        let result = resolve_env_vars("staging", &envs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("nonexistent"));
+    }
+
+    #[test]
+    fn resolve_env_vars_cycle_returns_err() {
+        let envs = vec![
+            mk_env("a", Some("b"), &[]),
+            mk_env("b", Some("a"), &[]),
+        ];
+        let result = resolve_env_vars("a", &envs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cycle"));
     }
 }

@@ -12,7 +12,7 @@ API Almanac is a free, open-source desktop app that turns exploratory HTTP calls
 
 - **Request editor** — method, URL, query params, headers, body (JSON / form / text)
 - **Cases** — named variable overrides per request (e.g. `valid-user`, `invalid-email`); select a case at run time or cycle through all in a spot-check
-- **Environment system** — named variable sets (`local`, `staging`, `production`) with `{{double_braces}}` template syntax; secrets read from OS environment variables at runtime via `{{secret.VAR_NAME}}`
+- **Environment system** — named variable sets (`local`, `staging`, `production`) with `{{double_braces}}` template syntax; environments can inherit from a parent env so shared variables (tenant IDs, auth tokens, API versions) live in one place; secrets read from OS environment variables at runtime via `{{secret.VAR_NAME}}`; last-used environment is remembered per project
 - **Expectations** — lightweight assertions on status code, response time, headers, and JSON fields; configure directly in the GUI and view pass/fail after every run
 - **Captures** — extract values from responses (JSON paths, headers) into named session variables for use in subsequent requests; live preview of captured values in the editor
 - **Response viewer** — pretty-printed JSON, headers, status badge, duration
@@ -147,16 +147,29 @@ name: My API
 description: Notes about the My API REST service
 ```
 
+### `environments/base.yaml`
+
+```yaml
+id: base
+name: Base
+
+vars:
+  tenant: acme
+  auth.token: "{{secret.API_TOKEN}}"
+```
+
 ### `environments/local.yaml`
 
 ```yaml
 id: local
 name: Local
+parent: base          # inherits tenant and auth.token from base
 
 vars:
   base_url: http://localhost:8000
-  auth.token: "{{secret.LOCAL_API_TOKEN}}"
 ```
+
+An environment with a `parent` inherits all of the parent's variables. Its own `vars` override any keys with the same name. Chains are supported (`local → staging-defaults → base`); cycles are detected and rejected at run time.
 
 Values using `{{secret.VAR_NAME}}` read the OS environment variable `VAR_NAME` at runtime. The secret value is never written to disk.
 
