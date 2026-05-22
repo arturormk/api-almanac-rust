@@ -3,7 +3,7 @@ use api_almanac_store::{apply_redaction, load_latest_response, now_iso8601, save
 use api_almanac_tools as tools;
 use api_almanac_typesketch as typesketch;
 use api_almanac_model::{
-    parse_order_prefix, strip_order_prefix,
+    generate_uid, parse_order_prefix, strip_order_prefix,
     AlmanacProject, BodyKind, Environment, ProjectLoader, RequestDef, ResolvedBody, ResolvedRequest,
     VariableResolver,
 };
@@ -57,6 +57,7 @@ pub struct CreateGroupResult {
 
 #[derive(Serialize)]
 pub struct RequestSummary {
+    pub uid: String,
     pub id: String,
     pub name: String,
     pub method: String,
@@ -76,6 +77,8 @@ pub struct FolderSummary {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RequestData {
+    #[serde(default)]
+    pub uid: String,
     pub id: String,
     pub name: String,
     pub method: String,
@@ -172,6 +175,7 @@ fn load_project_data(loader: &ProjectLoader) -> Result<ProjectData, String> {
         requests: requests
             .into_iter()
             .map(|e| RequestSummary {
+                uid: e.request.uid.clone(),
                 id: e.request.id.clone(),
                 name: e.request.name.clone(),
                 method: e.request.method.clone(),
@@ -275,6 +279,7 @@ async fn open_project(
         None => return Err("cancelled".into()),
     };
     let loader = ProjectLoader::new(&path);
+    loader.ensure_all_uids().map_err(|e| e.to_string())?;
     let data = load_project_data(&loader)?;
     push_recent(&app, &path, &data.name);
     *state.project_path.lock().unwrap() = Some(path);
@@ -412,7 +417,7 @@ async fn run_project_request(
         url: response.url.clone(),
     };
     let stored = apply_redaction(stored, &entry.request.redact);
-    let _ = save_latest_response(&root, &entry.request.id, &stored);
+    let _ = save_latest_response(&root, &entry.request.uid, &stored);
 
     Ok(RunResult { response, checks, captured })
 }
@@ -425,7 +430,12 @@ fn save_request(
 ) -> Result<(), String> {
     let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
     let loader = ProjectLoader::new(&root);
-    let req = request_data_to_def(data);
+    let mut req = request_data_to_def(data);
+    // Ensure uid is always persisted: use the one from the incoming data, or generate a
+    // fresh one (e.g. for newly created requests where the frontend hasn't received a uid yet).
+    if req.uid.is_empty() {
+        req.uid = generate_uid();
+    }
     loader
         .save_request(std::path::Path::new(&file_path), &req)
         .map_err(|e| e.to_string())
@@ -451,14 +461,17 @@ fn sketch_json(body: String) -> Result<String, String> {
     Ok(typesketch::to_yaml_string(&typesketch::sketch_json(&value)))
 }
 
-/// Save a TypeSketch YAML sketch to `sketches/<request_id>.typesketch.yaml`
+/// Save a TypeSketch YAML sketch to `sketches/<request_uid>.typesketch.yaml`
 /// inside the currently open project.
 #[tauri::command]
 fn save_sketch(
     state: State<'_, AppState>,
-    request_id: String,
+    request_uid: String,
     yaml: String,
 ) -> Result<(), String> {
+    if request_uid.is_empty() {
+        return Err("cannot save sketch: request uid is not set".into());
+    }
     let root = state
         .project_path
         .lock()
@@ -467,7 +480,7 @@ fn save_sketch(
         .ok_or("no project open")?;
     let dir = root.join("sketches");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{request_id}.typesketch.yaml"));
+    let path = dir.join(format!("{request_uid}.typesketch.yaml"));
     std::fs::write(path, yaml).map_err(|e| e.to_string())
 }
 
@@ -567,10 +580,10 @@ fn export_request_markdown(
         .find(|e| e.file_path.to_string_lossy() == file_path)
         .ok_or_else(|| format!("request not found: {file_path}"))?;
 
-    let sketch_path = root.join("sketches").join(format!("{}.typesketch.yaml", entry.request.id));
+    let sketch_path = root.join("sketches").join(format!("{}.typesketch.yaml", entry.request.uid));
     let sketch = std::fs::read_to_string(&sketch_path).ok();
 
-    let last_resp = load_latest_response(&root, &entry.request.id)
+    let last_resp = load_latest_response(&root, &entry.request.uid)
         .unwrap_or(None);
 
     let md = render_request_md(&entry.request, sketch.as_deref(), last_resp.as_ref());
@@ -593,15 +606,18 @@ fn export_request_markdown(
     Ok(rel)
 }
 
-/// Load the most recently saved response for a request (by request ID).
+/// Load the most recently saved response for a request (by uid).
 /// Returns `None` if no response has been saved yet.
 #[tauri::command]
 fn get_latest_response(
     state: State<'_, AppState>,
-    request_id: String,
+    request_uid: String,
 ) -> Result<Option<StoredResponse>, String> {
+    if request_uid.is_empty() {
+        return Ok(None);
+    }
     let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
-    load_latest_response(&root, &request_id).map_err(|e| e.to_string())
+    load_latest_response(&root, &request_uid).map_err(|e| e.to_string())
 }
 
 /// Export a spot-check report as Markdown to `reports/spot-check-{timestamp}.md`.
@@ -748,6 +764,7 @@ fn request_def_to_data(req: RequestDef) -> RequestData {
         .unwrap_or((None, None));
 
     RequestData {
+        uid: req.uid,
         id: req.id,
         name: req.name,
         method: req.method,
@@ -777,6 +794,7 @@ fn request_data_to_def(data: RequestData) -> RequestDef {
     });
 
     RequestDef {
+        uid: data.uid,
         id: data.id,
         name: data.name,
         method: data.method,
@@ -1016,6 +1034,7 @@ async fn open_recent_project(
         return Err(format!("Project path no longer exists: {path}"));
     }
     let loader = ProjectLoader::new(&pb);
+    loader.ensure_all_uids().map_err(|e| e.to_string())?;
     let data = load_project_data(&loader)?;
     push_recent(&app, &pb, &data.name);
     *state.project_path.lock().unwrap() = Some(pb);

@@ -302,9 +302,9 @@ impl ProjectLoader {
 
     /// Duplicate a request YAML file in the same folder.
     ///
-    /// The copy gets a unique display name (`"{name} copy"`, `"{name} copy 2"`, …) and a
-    /// new `id` derived from the copy name. No numeric prefix is assigned so the copy
-    /// sorts last; the user can reorder via drag-and-drop.
+    /// The copy gets a unique display name (`"{name} copy"`, `"{name} copy 2"`, …), a
+    /// new `id` derived from the copy name, and a freshly generated `uid`.
+    /// No numeric prefix is assigned so the copy sorts last; the user can reorder via drag-and-drop.
     /// Returns the new path relative to the project root.
     pub fn duplicate_request(&self, relative_path: &Path) -> Result<PathBuf, ModelError> {
         use std::collections::HashSet;
@@ -337,11 +337,65 @@ impl ProjectLoader {
             .unwrap_or_else(|| PathBuf::from(&new_file_name));
 
         let mut new_req = original;
+        new_req.uid = crate::uid::generate_uid();
         new_req.id = new_id;
         new_req.name = new_name;
 
         self.save_request(&new_rel_path, &new_req)?;
         Ok(new_rel_path)
+    }
+
+    /// Ensure every request YAML file under `requests/` has a non-empty, unique `uid`.
+    ///
+    /// For files missing a uid, prepends `uid: {XXXXXXXX}\n` to the raw YAML text,
+    /// preserving comments, field order, and other content exactly.
+    /// For files with a duplicate uid (e.g. after a manual copy), re-serializes the
+    /// offending file with a freshly generated uid.
+    ///
+    /// This is called once per `open_project` / `open_recent_project` and is idempotent
+    /// after the first run (files already having a uid are not touched).
+    pub fn ensure_all_uids(&self) -> Result<(), ModelError> {
+        use std::collections::HashSet;
+
+        let dir = self.root.join("requests");
+        if !dir.exists() {
+            return Ok(());
+        }
+        let mut abs_paths = Vec::new();
+        collect_yaml_files(&dir, &mut abs_paths)?;
+        let mut seen: HashSet<String> = HashSet::new();
+
+        for abs_path in abs_paths {
+            let text = std::fs::read_to_string(&abs_path)?;
+            let req: RequestDef = serde_yaml::from_str(&text)
+                .map_err(|e| ModelError::Yaml { path: abs_path.display().to_string(), source: e })?;
+
+            if req.uid.is_empty() {
+                // Prepend uid line to preserve all existing content (comments, field order).
+                let uid = loop {
+                    let candidate = crate::uid::generate_uid();
+                    if seen.insert(candidate.clone()) { break candidate; }
+                };
+                let new_text = if let Some(rest) = text.strip_prefix("---\n") {
+                    format!("---\nuid: {uid}\n{rest}")
+                } else {
+                    format!("uid: {uid}\n{text}")
+                };
+                std::fs::write(&abs_path, new_text)?;
+            } else if !seen.insert(req.uid.clone()) {
+                // Collision (rare): regenerate uid and re-serialize.
+                let uid = loop {
+                    let candidate = crate::uid::generate_uid();
+                    if seen.insert(candidate.clone()) { break candidate; }
+                };
+                let mut updated = req;
+                updated.uid = uid;
+                let yaml = serde_yaml::to_string(&updated)
+                    .map_err(|e| ModelError::Yaml { path: abs_path.display().to_string(), source: e })?;
+                std::fs::write(&abs_path, yaml)?;
+            }
+        }
+        Ok(())
     }
 
     /// Reorder a group (directory) among its siblings by assigning consecutive 1..=N prefixes.
@@ -760,6 +814,7 @@ mod tests {
         let loader = ProjectLoader::new(tmp.path());
 
         let req = crate::request::RequestDef {
+            uid: "TESTUID1".into(),
             id: "users.get".into(),
             name: "Get user".into(),
             method: "GET".into(),

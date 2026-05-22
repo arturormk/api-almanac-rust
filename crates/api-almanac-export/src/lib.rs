@@ -183,6 +183,7 @@ mod tests {
 
     fn minimal() -> RequestDef {
         RequestDef {
+            uid: String::new(),
             id: "users.get".into(),
             name: "Get user".into(),
             method: "GET".into(),

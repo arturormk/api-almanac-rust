@@ -24,6 +24,9 @@ pub struct Expect {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestDef {
+    /// Stable 8-char UID ([A-Z0-9]{8}). Generated on creation; never changes across renames/moves.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub id: String,
     pub name: String,
     #[serde(default)]

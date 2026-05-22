@@ -61,6 +61,7 @@ interface RunResult {
 }
 
 interface RequestSummary {
+  uid: string;
   id: string;
   name: string;
   method: string;
@@ -110,6 +111,7 @@ interface RecentProject {
 }
 
 interface RequestData {
+  uid: string;
   id: string;
   name: string;
   method: string;
@@ -1532,6 +1534,7 @@ export default function App() {
   const [newReqFolder, setNewReqFolder] = useState("");
 
   // Stored id/name for save
+  const [reqUid, setReqUid] = useState("");
   const [reqId, setReqId] = useState("");
   const [reqName, setReqName] = useState("");
 
@@ -1575,6 +1578,7 @@ export default function App() {
   function markDirty() { setIsDirty(true); setSaveStatus("idle"); }
 
   function loadRequestData(data: RequestData) {
+    setReqUid(data.uid);
     setReqId(data.id);
     setReqName(data.name);
     setMethod(data.method as HttpMethod);
@@ -1608,7 +1612,7 @@ export default function App() {
       casesMap[name] = toMap(rows);
     }
     return {
-      id: reqId, name: reqName || reqId, method, url,
+      uid: reqUid, id: reqId, name: reqName || reqId, method, url,
       headers: toMap(reqHeaders), query: toMap(params),
       body_content: bodyKind !== "none" ? bodyContent : undefined,
       body_kind: bodyKind !== "none" ? bodyKind : undefined,
@@ -1649,6 +1653,7 @@ export default function App() {
 
   function resetToAdhoc() {
     setSelectedFilePath(null);
+    setReqUid(""); setReqId(""); setReqName("");
     setIsNewRequest(false);
     setNewReqDisplayName(""); setNewReqFolder("");
     setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]);
@@ -1836,7 +1841,7 @@ export default function App() {
       setSelectedFilePath(filePath);
       loadRequestData(data);
       try {
-        const saved = await invoke<StoredResponse | null>("get_latest_response", { requestId: data.id });
+        const saved = await invoke<StoredResponse | null>("get_latest_response", { requestUid: data.uid });
         if (saved) {
           setResponse(saved);
           setSavedMeta({ ran_at: saved.ran_at, environment: saved.environment });
@@ -1871,7 +1876,11 @@ export default function App() {
     try {
       await invoke("save_request", { filePath, data: buildRequestData({ id, name: displayName }) });
       await reloadProject();
-      setSelectedFilePath(filePath); setReqId(id); setReqName(displayName);
+      const freshData = await invoke<RequestData>("get_request", { filePath });
+      setSelectedFilePath(filePath);
+      setReqUid(freshData.uid);
+      setReqId(freshData.id);
+      setReqName(freshData.name);
       setIsNewRequest(false); setIsDirty(false); setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 2000);
     } catch (e) { setSaveStatus("idle"); setReqError(String(e)); }
@@ -1920,9 +1929,9 @@ export default function App() {
   }
 
   async function saveSketch() {
-    if (!reqId || !sketchYaml) return;
+    if (!reqUid || !sketchYaml) return;
     try {
-      await invoke("save_sketch", { requestId: reqId, yaml: sketchYaml });
+      await invoke("save_sketch", { requestUid: reqUid, yaml: sketchYaml });
     } catch (e) { setReqError(String(e)); }
   }
 

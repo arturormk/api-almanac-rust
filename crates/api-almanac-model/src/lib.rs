@@ -6,6 +6,7 @@ pub mod project;
 pub mod request;
 pub mod resolved;
 pub mod resolver;
+pub mod uid;
 
 pub use body::{BodyKind, RequestBody};
 pub use environment::Environment;
@@ -15,3 +16,4 @@ pub use project::AlmanacProject;
 pub use request::{Case, Expect, RequestDef};
 pub use resolved::{ResolvedBody, ResolvedRequest};
 pub use resolver::VariableResolver;
+pub use uid::generate_uid;
