@@ -73,8 +73,8 @@ my-api/
 ### Run in development
 
 ```bash
-git clone https://github.com/your-org/apialmanac-rust
-cd apialmanac-rust
+git clone https://github.com/arturormk/api-almanac-rust.git
+cd api-almanac-rust
 npm install
 npm run tauri dev
 ```
