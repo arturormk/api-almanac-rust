@@ -58,6 +58,7 @@ interface RunResult {
   response: HttpResponse;
   checks: CheckItem[];
   captured: Record<string, string>;
+  curl: string;
 }
 
 interface RequestSummary {
@@ -1799,6 +1800,7 @@ export default function App() {
   const [pluginLoading, setPluginLoading] = useState<Record<string, boolean>>({});
   const [dryRunResult, setDryRunResult] = useState<{ curl: string } | null>(null);
   const [showDryRunMenu, setShowDryRunMenu] = useState(false);
+  const [lastRunCurl, setLastRunCurl] = useState<string | null>(null);
   const [mainPane, setMainPane] = useState<'request' | 'checks' | 'environments'>('request');
   const [spotCheckSummary, setSpotCheckSummary] = useState<{ passed: number; failed: number; errored: number } | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
@@ -1930,7 +1932,7 @@ export default function App() {
     setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]); setCaptures([mkRow()]);
     setExpectStatus(""); setExpectTimeMs(""); setExpectHeaders([mkRow()]); setExpectJson([mkRow()]);
     setBodyKind("none"); setBodyContent(""); setNotes("");
-    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null);
+    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null); setLastRunCurl(null);
     setIsDirty(false); setSaveStatus("idle");
     setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
     setLastChecks([]); setLastCaptured({});
@@ -1986,7 +1988,7 @@ export default function App() {
     setNewReqDisplayName(""); setNewReqFolder("");
     setMethod("GET"); setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]);
     setBodyKind("none"); setBodyContent(""); setNotes("");
-    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null);
+    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null); setLastRunCurl(null);
     setIsDirty(false); setSaveStatus("idle");
     setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
     setLastChecks([]); setLastCaptured({});
@@ -1998,7 +2000,7 @@ export default function App() {
     setNewReqDisplayName(""); setNewReqFolder(folder);
     setMethod("GET"); setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]);
     setBodyKind("none"); setBodyContent(""); setNotes("");
-    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null);
+    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null); setLastRunCurl(null);
     setIsDirty(false); setSaveStatus("idle");
     setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
     setLastChecks([]); setLastCaptured({});
@@ -2113,7 +2115,7 @@ export default function App() {
 
   async function selectRequest(filePath: string) {
     setMainPane('request');
-    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null); setIsNewRequest(false);
+    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null); setLastRunCurl(null); setIsNewRequest(false);
     setLastChecks([]); setLastCaptured({});
     setPluginResults({}); setPluginLoading({});
     try {
@@ -2170,7 +2172,7 @@ export default function App() {
 
   async function send() {
     if (!url.trim() && !isProjectMode) return;
-    setLoading(true); setReqError(null); setResponse(null); setSavedMeta(null); setSketchYaml(null); setDryRunResult(null);
+    setLoading(true); setReqError(null); setResponse(null); setSavedMeta(null); setSketchYaml(null); setDryRunResult(null); setLastRunCurl(null);
     setLastChecks([]); setLastCaptured({}); setPluginResults({});
     try {
       let resp: HttpResponse;
@@ -2183,10 +2185,12 @@ export default function App() {
         resp = result.response;
         setLastChecks(result.checks);
         setLastCaptured(result.captured);
+        setLastRunCurl(result.curl);
         if (Object.keys(result.captured).length > 0) {
           await refreshSessionVars();
         }
       } else {
+        setLastRunCurl(null);
         resp = await invoke<HttpResponse>("execute_request", {
           method, url: url.trim(),
           headers: toMap(reqHeaders), query: toMap(params),
@@ -2746,25 +2750,22 @@ export default function App() {
                 ))}
               </div>
               <div className="tab-content response-content">
-                {resTab === "curl" && (
-                  <div className="sketch-pane">
-                    <div className="sketch-actions">
-                      <button
-                        className="sketch-btn"
-                        onClick={() =>
-                          navigator.clipboard.writeText(
-                            buildCurlCommand(method, response.url, reqHeaders, bodyKind, bodyContent)
-                          )
-                        }
-                      >
-                        Copy
-                      </button>
+                {resTab === "curl" && (() => {
+                  const curlToShow = lastRunCurl ?? buildCurlCommand(method, response.url, reqHeaders, bodyKind, bodyContent);
+                  return (
+                    <div className="sketch-pane">
+                      <div className="sketch-actions">
+                        <button
+                          className="sketch-btn"
+                          onClick={() => navigator.clipboard.writeText(curlToShow)}
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <pre className="sketch-yaml">{curlToShow}</pre>
                     </div>
-                    <pre className="sketch-yaml">
-                      {buildCurlCommand(method, response.url, reqHeaders, bodyKind, bodyContent)}
-                    </pre>
-                  </div>
-                )}
+                  );
+                })()}
                 {resTab === "body" && (
                   <PrettyBody body={response.body} contentType={response.headers["content-type"]} />
                 )}

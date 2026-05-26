@@ -141,6 +141,7 @@ pub struct RunResult {
     pub response: HttpResponse,
     pub checks: Vec<CheckItem>,
     pub captured: HashMap<String, String>,
+    pub curl: String,
 }
 
 /// Result of a dry run: the fully-resolved curl command without executing HTTP.
@@ -463,7 +464,7 @@ async fn run_project_request(
     let stored = apply_redaction(stored, &entry.request.redact);
     let _ = save_latest_response(&root, &entry.request.uid, &stored);
 
-    Ok(RunResult { response, checks, captured })
+    Ok(RunResult { response, checks, captured, curl: build_curl_string(&resolved) })
 }
 
 // ── Dry-run helpers ────────────────────────────────────────────────────────
