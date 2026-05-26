@@ -750,7 +750,7 @@ function EditableJsonTreeView({ body, onChange }: { body: string; onChange: (s: 
 // ── Pretty body ────────────────────────────────────────────────────────────
 
 function PrettyBody({ body, contentType }: { body: string; contentType?: string }) {
-  const [treeMode, setTreeMode] = useState(false);
+  const [treeMode, setTreeMode] = useState(true);
   const isJson =
     contentType?.includes("json") ||
     body.trimStart().startsWith("{") ||
@@ -761,8 +761,8 @@ function PrettyBody({ body, contentType }: { body: string; contentType?: string 
       return (
         <>
           <div className="body-view-toggle">
-            <button className={`body-view-btn${!treeMode ? " active" : ""}`} onClick={() => setTreeMode(false)}>Raw</button>
             <button className={`body-view-btn${treeMode ? " active" : ""}`} onClick={() => setTreeMode(true)}>Tree</button>
+            <button className={`body-view-btn${!treeMode ? " active" : ""}`} onClick={() => setTreeMode(false)}>Raw</button>
           </div>
           {treeMode
             ? <JsonTreeView body={body} />
@@ -2163,7 +2163,7 @@ export default function App() {
   const [showDryRunMenu, setShowDryRunMenu] = useState(false);
   const [lastRunCurl, setLastRunCurl] = useState<string | null>(null);
   const [mainPane, setMainPane] = useState<'request' | 'checks' | 'environments'>('request');
-  const [reqBodyView, setReqBodyView] = useState<"edit" | "tree">("edit");
+  const [reqBodyView, setReqBodyView] = useState<"edit" | "tree">("tree");
   const [spotCheckSummary, setSpotCheckSummary] = useState<{ passed: number; failed: number; errored: number } | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
 
@@ -2930,10 +2930,10 @@ export default function App() {
                 </div>
                 {bodyKind === "json" && isValidJson(bodyContent) && (
                   <div className="body-view-toggle">
-                    <button className={`body-view-btn${reqBodyView === "edit" ? " active" : ""}`}
-                      onClick={() => setReqBodyView("edit")}>Raw</button>
                     <button className={`body-view-btn${reqBodyView === "tree" ? " active" : ""}`}
                       onClick={() => setReqBodyView("tree")}>Tree</button>
+                    <button className={`body-view-btn${reqBodyView === "edit" ? " active" : ""}`}
+                      onClick={() => setReqBodyView("edit")}>Raw</button>
                   </div>
                 )}
                 {bodyKind !== "none" && (bodyKind !== "json" || reqBodyView === "edit") && (
