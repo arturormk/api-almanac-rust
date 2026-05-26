@@ -2935,7 +2935,7 @@ export default function App() {
                       onClick={() => setReqBodyView("edit")}>Raw</button>
                   </div>
                 )}
-                {bodyKind !== "none" && (bodyKind !== "json" || reqBodyView === "edit") && (
+                {bodyKind !== "none" && (bodyKind !== "json" || reqBodyView === "edit" || !isValidJson(bodyContent)) && (
                   <textarea
                     className="body-textarea"
                     placeholder={bodyKind === "json" ? '{\n  "key": "value"\n}' : bodyKind === "form" ? "key=value&key2=value2" : "Request body"}
@@ -2944,7 +2944,7 @@ export default function App() {
                     spellCheck={false}
                   />
                 )}
-                {bodyKind === "json" && reqBodyView === "tree" && (
+                {bodyKind === "json" && reqBodyView === "tree" && isValidJson(bodyContent) && (
                   <EditableJsonTreeView
                     body={bodyContent}
                     onChange={(v) => { setBodyContent(v); if (isProjectMode) markDirty(); }}
