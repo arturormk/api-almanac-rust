@@ -1797,6 +1797,8 @@ export default function App() {
   const [plugins, setPlugins] = useState<PluginManifest[]>([]);
   const [pluginResults, setPluginResults] = useState<Record<string, PluginOutput>>({});
   const [pluginLoading, setPluginLoading] = useState<Record<string, boolean>>({});
+  const [dryRunResult, setDryRunResult] = useState<{ curl: string } | null>(null);
+  const [showDryRunMenu, setShowDryRunMenu] = useState(false);
   const [mainPane, setMainPane] = useState<'request' | 'checks' | 'environments'>('request');
   const [spotCheckSummary, setSpotCheckSummary] = useState<{ passed: number; failed: number; errored: number } | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
@@ -1928,7 +1930,7 @@ export default function App() {
     setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]); setCaptures([mkRow()]);
     setExpectStatus(""); setExpectTimeMs(""); setExpectHeaders([mkRow()]); setExpectJson([mkRow()]);
     setBodyKind("none"); setBodyContent(""); setNotes("");
-    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null);
+    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null);
     setIsDirty(false); setSaveStatus("idle");
     setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
     setLastChecks([]); setLastCaptured({});
@@ -1984,7 +1986,7 @@ export default function App() {
     setNewReqDisplayName(""); setNewReqFolder("");
     setMethod("GET"); setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]);
     setBodyKind("none"); setBodyContent(""); setNotes("");
-    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null);
+    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null);
     setIsDirty(false); setSaveStatus("idle");
     setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
     setLastChecks([]); setLastCaptured({});
@@ -1996,7 +1998,7 @@ export default function App() {
     setNewReqDisplayName(""); setNewReqFolder(folder);
     setMethod("GET"); setUrl(""); setParams([mkRow()]); setReqHeaders([mkRow()]);
     setBodyKind("none"); setBodyContent(""); setNotes("");
-    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null);
+    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null);
     setIsDirty(false); setSaveStatus("idle");
     setCases({}); setEditingCaseName(null); setNewCaseInput(""); setSelectedCase("");
     setLastChecks([]); setLastCaptured({});
@@ -2111,7 +2113,7 @@ export default function App() {
 
   async function selectRequest(filePath: string) {
     setMainPane('request');
-    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setIsNewRequest(false);
+    setResponse(null); setSavedMeta(null); setSketchYaml(null); setReqError(null); setDryRunResult(null); setIsNewRequest(false);
     setLastChecks([]); setLastCaptured({});
     setPluginResults({}); setPluginLoading({});
     try {
@@ -2168,7 +2170,7 @@ export default function App() {
 
   async function send() {
     if (!url.trim() && !isProjectMode) return;
-    setLoading(true); setReqError(null); setResponse(null); setSavedMeta(null); setSketchYaml(null);
+    setLoading(true); setReqError(null); setResponse(null); setSavedMeta(null); setSketchYaml(null); setDryRunResult(null);
     setLastChecks([]); setLastCaptured({}); setPluginResults({});
     try {
       let resp: HttpResponse;
@@ -2204,6 +2206,29 @@ export default function App() {
       setResTab("body");
     } catch (e) { setReqError(String(e)); }
     finally { setLoading(false); }
+  }
+
+  async function dryRun() {
+    setShowDryRunMenu(false);
+    setReqError(null); setResponse(null); setSavedMeta(null); setSketchYaml(null);
+    setLastChecks([]); setLastCaptured({}); setPluginResults({});
+    try {
+      let curlStr: string;
+      if (isProjectMode && selectedFilePath) {
+        const result = await invoke<{ curl: string }>("dry_run_project_request", {
+          filePath: selectedFilePath,
+          envId: selectedEnvId || null,
+          caseName: selectedCase || null,
+        });
+        curlStr = result.curl;
+      } else {
+        curlStr = buildCurlCommand(method, url.trim(), reqHeaders, bodyKind, bodyContent);
+      }
+      setDryRunResult({ curl: curlStr });
+      setResTab("curl");
+    } catch (e) {
+      setReqError(String(e));
+    }
   }
 
   async function saveSketch() {
@@ -2427,13 +2452,29 @@ export default function App() {
               Export MD
             </button>
           )}
-          <button
-            className="send-button"
-            onClick={send}
-            disabled={loading || (!isProjectMode && !url.trim())}
-          >
-            {loading ? "Sending…" : isProjectMode ? "Run" : "Send"}
-          </button>
+          <div className="run-button-group">
+            <button
+              className="send-button"
+              onClick={send}
+              disabled={loading || (!isProjectMode && !url.trim())}
+            >
+              {loading ? "Sending…" : isProjectMode ? "Run" : "Send"}
+            </button>
+            <button
+              className="run-dropdown-arrow"
+              onClick={() => setShowDryRunMenu((v) => !v)}
+              onBlur={() => setTimeout(() => setShowDryRunMenu(false), 150)}
+              disabled={loading || (!isProjectMode && !url.trim())}
+              title="Dry run — preview curl without sending"
+            >
+              ▾
+            </button>
+            {showDryRunMenu && (
+              <div className="run-dropdown-menu">
+                <button onMouseDown={dryRun}>Dry Run</button>
+              </div>
+            )}
+          </div>
         </div>
         {exportedPath && (
           <div className="export-flash">Exported → <code>{exportedPath}</code></div>
@@ -2643,6 +2684,30 @@ export default function App() {
             <div className="response-error"><strong>Error:</strong> {reqError}</div>
           )}
           {loading && <div className="response-loading">Sending request…</div>}
+          {dryRunResult && !loading && (
+            <>
+              <div className="response-meta">
+                <span className="dry-run-badge">Dry Run</span>
+                <span className="response-status-text">No request sent</span>
+              </div>
+              <div className="tab-bar">
+                <button className="tab tab-active">Curl</button>
+              </div>
+              <div className="tab-content response-content">
+                <div className="sketch-pane">
+                  <div className="sketch-actions">
+                    <button
+                      className="sketch-btn"
+                      onClick={() => navigator.clipboard.writeText(dryRunResult.curl)}
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <pre className="sketch-yaml">{dryRunResult.curl}</pre>
+                </div>
+              </div>
+            </>
+          )}
           {response && (
             <>
               <div className="response-meta">
@@ -2788,7 +2853,7 @@ export default function App() {
               </div>
             </>
           )}
-          {!response && !reqError && !loading && (
+          {!response && !dryRunResult && !reqError && !loading && (
             <div className="response-empty">
               {isProjectMode
                 ? "Click Run to execute with environment substitution."

@@ -143,6 +143,12 @@ pub struct RunResult {
     pub captured: HashMap<String, String>,
 }
 
+/// Result of a dry run: the fully-resolved curl command without executing HTTP.
+#[derive(Serialize)]
+pub struct DryRunResult {
+    pub curl: String,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CheckItem {
     pub name: String,
@@ -458,6 +464,108 @@ async fn run_project_request(
     let _ = save_latest_response(&root, &entry.request.uid, &stored);
 
     Ok(RunResult { response, checks, captured })
+}
+
+// ── Dry-run helpers ────────────────────────────────────────────────────────
+
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+fn build_curl_string(req: &ResolvedRequest) -> String {
+    let mut url = req.url.clone();
+    if !req.query.is_empty() {
+        let mut pairs: Vec<_> = req.query.iter().collect();
+        pairs.sort_by_key(|(k, _)| k.as_str());
+        let qs = pairs
+            .iter()
+            .map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        url = format!("{}?{}", url, qs);
+    }
+    let mut parts = vec![format!("curl -X {} '{}'", req.method, url)];
+    let mut hdrs: Vec<_> = req.headers.iter().collect();
+    hdrs.sort_by_key(|(k, _)| k.to_lowercase());
+    for (k, v) in hdrs {
+        parts.push(format!("  -H '{}: {}'", k, v));
+    }
+    if let Some(body) = &req.body {
+        if !body.content.trim().is_empty() {
+            let escaped = body.content.replace('\'', "'\\''");
+            parts.push(format!("  --data-raw '{}'", escaped));
+        }
+    }
+    parts.join(" \\\n")
+}
+
+/// Resolve all variables for a project request and return the curl command — no HTTP call made.
+#[tauri::command]
+async fn dry_run_project_request(
+    state: State<'_, AppState>,
+    file_path: String,
+    env_id: Option<String>,
+    case_name: Option<String>,
+) -> Result<DryRunResult, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+
+    let entries = loader.load_requests().map_err(|e| e.to_string())?;
+    let entry = entries
+        .into_iter()
+        .find(|e| e.file_path.to_string_lossy() == file_path)
+        .ok_or_else(|| format!("request not found: {file_path}"))?;
+
+    let environments = loader.load_environments().map_err(|e| e.to_string())?;
+    let env = env_id
+        .as_deref()
+        .and_then(|id| environments.iter().find(|e| e.id == id));
+    let case = case_name
+        .as_deref()
+        .and_then(|name| entry.request.cases.get(name));
+
+    let mut vars: HashMap<String, String> = env
+        .map(|e| resolve_env_vars(&e.id, &environments))
+        .transpose()
+        .map_err(|e| e)?
+        .unwrap_or_default();
+    if let Some(c) = case {
+        vars.extend(c.clone());
+    }
+    {
+        let session = state.session_vars.lock().unwrap();
+        vars.extend(session.clone());
+    }
+    let mut resolved = VariableResolver::from_vars(vars)
+        .resolve_request(&entry.request)
+        .map_err(|e| e.to_string())?;
+
+    if resolved.url.contains("{{") {
+        let token = resolved.url
+            .split("{{").nth(1)
+            .and_then(|s| s.split("}}").next())
+            .unwrap_or("unknown");
+        return Err(format!("URL contains unresolved variable {{{{{}}}}} — select an environment", token));
+    }
+
+    if let Some(c) = case {
+        for (key, value) in c {
+            if resolved.query.contains_key(key.as_str()) {
+                resolved.query.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    Ok(DryRunResult { curl: build_curl_string(&resolved) })
 }
 
 #[tauri::command]
@@ -1118,6 +1226,7 @@ pub fn run() {
             reload_project,
             get_request,
             run_project_request,
+            dry_run_project_request,
             save_request,
             get_session_vars,
             clear_session_vars,
