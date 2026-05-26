@@ -63,7 +63,7 @@ Request arguments accept either a file path (`requests/auth/login.yaml`) or a re
 |---|---|
 | `greet(name)` | Smoke-test command |
 | `execute_request(method, url, headers, query, body_content?, body_kind?)` | Run an ad-hoc HTTP request; returns `HttpResponse` |
-| `open_project()` | Open a folder-picker dialog and load the project; returns `ProjectData` |
+| `open_project()` | Open a folder-picker dialog, assign UIDs, normalize file names, and load the project; returns `ProjectData` |
 | `get_request(file_path)` | Load a single request definition by path relative to project root; returns `RequestData` |
 | `run_project_request(file_path, env_id?, case_name?)` | Run a project request with env variable substitution; returns `HttpResponse` |
 | `save_request(file_path, data)` | Write edited `RequestData` back to its YAML file |
@@ -83,7 +83,7 @@ Request arguments accept either a file path (`requests/auth/login.yaml`) or a re
 | `rename_group(old_folder, new_folder)` | Rename request directory; returns updated `ProjectData` |
 | `delete_group(folder)` | Remove request directory and all contents; returns updated `ProjectData` |
 | `delete_request(file_path)` | Delete a request YAML file; returns updated `ProjectData` |
-| `rename_request(file_path, new_name)` | Update `name:` field in YAML (file name and `id` unchanged); returns updated `ProjectData` |
+| `rename_request(file_path, new_name)` | Update `name:` field in YAML and rename the file to match (numeric prefix preserved, `id` unchanged); returns `MoveResult` |
 | `move_request(file_path, new_folder)` | Move YAML file to different folder; returns `MoveResult { new_file_path, project }` |
 
 ## AppState

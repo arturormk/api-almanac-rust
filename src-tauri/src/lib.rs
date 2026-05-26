@@ -305,6 +305,7 @@ async fn open_project(
     };
     let loader = ProjectLoader::new(&path);
     loader.ensure_all_uids().map_err(|e| e.to_string())?;
+    loader.normalize_file_names().map_err(|e| e.to_string())?;
     let data = load_project_data(&loader)?;
     push_recent(&app, &path, &data.name);
     *state.project_path.lock().unwrap() = Some(path);
@@ -1050,11 +1051,15 @@ fn rename_request(
     state: State<'_, AppState>,
     file_path: String,
     new_name: String,
-) -> Result<ProjectData, String> {
+) -> Result<MoveResult, String> {
     let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
     let loader = ProjectLoader::new(&root);
-    loader.rename_request_name(Path::new(&file_path), &new_name).map_err(|e| e.to_string())?;
-    load_project_data(&loader)
+    let new_rel = loader.rename_request_name(Path::new(&file_path), &new_name).map_err(|e| e.to_string())?;
+    let project = load_project_data(&loader)?;
+    Ok(MoveResult {
+        new_file_path: new_rel.to_string_lossy().replace('\\', "/"),
+        project,
+    })
 }
 
 #[tauri::command]
@@ -1194,6 +1199,7 @@ async fn open_recent_project(
     }
     let loader = ProjectLoader::new(&pb);
     loader.ensure_all_uids().map_err(|e| e.to_string())?;
+    loader.normalize_file_names().map_err(|e| e.to_string())?;
     let data = load_project_data(&loader)?;
     push_recent(&app, &pb, &data.name);
     *state.project_path.lock().unwrap() = Some(pb);

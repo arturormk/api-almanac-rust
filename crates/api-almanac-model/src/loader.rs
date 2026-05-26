@@ -238,7 +238,7 @@ impl ProjectLoader {
 
     /// Update the `name` display field of a request in-place. The file name and `id`
     /// field are left unchanged so existing references remain valid.
-    pub fn rename_request_name(&self, relative_path: &Path, new_name: &str) -> Result<(), ModelError> {
+    pub fn rename_request_name(&self, relative_path: &Path, new_name: &str) -> Result<PathBuf, ModelError> {
         let abs = self.root.join(relative_path);
         let text = std::fs::read_to_string(&abs)?;
         let mut req: RequestDef = serde_yaml::from_str(&text)
@@ -246,8 +246,34 @@ impl ProjectLoader {
         req.name = new_name.to_string();
         let yaml = serde_yaml::to_string(&req)
             .map_err(|e| ModelError::Yaml { path: abs.display().to_string(), source: e })?;
-        std::fs::write(&abs, yaml)?;
-        Ok(())
+
+        // Derive new file name: preserve numeric prefix, embed uid for uniqueness.
+        let old_stem = abs.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let (prefix_num, _) = parse_order_prefix(old_stem);
+        let new_slug = safe_file_slug(new_name);
+        let new_file_name = if prefix_num == u32::MAX {
+            format!("{}-{new_slug}.yaml", req.uid)
+        } else {
+            format!("{prefix_num}-{}-{new_slug}.yaml", req.uid)
+        };
+
+        let folder_abs = abs.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+        })?;
+        let new_abs = folder_abs.join(&new_file_name);
+
+        if new_abs == abs {
+            std::fs::write(&abs, yaml)?;
+        } else {
+            std::fs::write(&new_abs, yaml)?;
+            std::fs::remove_file(&abs)?;
+        }
+
+        let new_rel = relative_path
+            .parent()
+            .map(|p| p.join(&new_file_name))
+            .unwrap_or_else(|| PathBuf::from(&new_file_name));
+        Ok(new_rel)
     }
 
     /// Move a request file to a different folder (physical move; `id` field unchanged).
@@ -307,8 +333,6 @@ impl ProjectLoader {
     /// No numeric prefix is assigned so the copy sorts last; the user can reorder via drag-and-drop.
     /// Returns the new path relative to the project root.
     pub fn duplicate_request(&self, relative_path: &Path) -> Result<PathBuf, ModelError> {
-        use std::collections::HashSet;
-
         let abs_path = self.root.join(relative_path);
         let original: RequestDef = load_yaml(&abs_path)?;
 
@@ -322,24 +346,21 @@ impl ProjectLoader {
             .filter_map(|p| load_yaml::<RequestDef>(p).ok())
             .map(|r| r.name)
             .collect();
-        let existing_files: HashSet<String> = siblings
-            .iter()
-            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_owned))
-            .collect();
 
         let new_name = copy_name(&original.name, &existing_names);
         let new_id = derive_copy_id(&original.id, &new_name);
-        let new_file_name = unique_file_name(&slugify(&new_name), &existing_files);
-
-        let new_rel_path = relative_path
-            .parent()
-            .map(|p| p.join(&new_file_name))
-            .unwrap_or_else(|| PathBuf::from(&new_file_name));
 
         let mut new_req = original;
         new_req.uid = crate::uid::generate_uid();
         new_req.id = new_id;
         new_req.name = new_name;
+
+        // UID guarantees uniqueness; no collision check needed.
+        let new_file_name = format!("{}-{}.yaml", new_req.uid, safe_file_slug(&new_req.name));
+        let new_rel_path = relative_path
+            .parent()
+            .map(|p| p.join(&new_file_name))
+            .unwrap_or_else(|| PathBuf::from(&new_file_name));
 
         self.save_request(&new_rel_path, &new_req)?;
         Ok(new_rel_path)
@@ -394,6 +415,26 @@ impl ProjectLoader {
                     .map_err(|e| ModelError::Yaml { path: abs_path.display().to_string(), source: e })?;
                 std::fs::write(&abs_path, yaml)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Rename every request YAML under `requests/` to the canonical format:
+    /// `{index}-{uid}-{safe_file_slug(name)}.yaml`
+    ///
+    /// Files whose name already matches are left untouched (idempotent).
+    /// Within each folder the existing sort order (by numeric prefix) is preserved and
+    /// 1-based indices are re-assigned.
+    ///
+    /// Must be called after `ensure_all_uids` so every file has a non-empty uid.
+    pub fn normalize_file_names(&self) -> Result<(), ModelError> {
+        let requests_dir = self.root.join("requests");
+        if !requests_dir.exists() {
+            return Ok(());
+        }
+        normalize_dir(&requests_dir)?;
+        for subdir in sorted_subdirs_in(&requests_dir)? {
+            normalize_dir(&subdir)?;
         }
         Ok(())
     }
@@ -520,7 +561,7 @@ fn derive_copy_id(original_id: &str, new_name: &str) -> String {
     }
 }
 
-/// Slugify a string for use in file names: lowercase, spaces → hyphens,
+/// Slugify a string for use in `id` and copy-name derivation: lowercase, spaces → hyphens,
 /// strip non-alphanumeric (except hyphens), collapse consecutive hyphens.
 fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -534,6 +575,50 @@ fn slugify(s: &str) -> String {
         }
     }
     out.trim_matches('-').to_owned()
+}
+
+/// Filesystem-safe slug for request file names.
+///
+/// Differences from `slugify`:
+/// - Folds common accented/diacritic chars to their ASCII base (e.g. `í → i`, `ç → c`)
+/// - Replaces unknown/unsafe chars with `_` instead of silently dropping them
+/// - Spaces and hyphens → `-`; underscores → `_`; consecutive separators collapsed
+fn safe_file_slug(s: &str) -> String {
+    fn fold(c: char) -> char {
+        match c {
+            'à'|'á'|'â'|'ã'|'ä'|'å'|'À'|'Á'|'Â'|'Ã'|'Ä'|'Å'|'æ'|'Æ' => 'a',
+            'è'|'é'|'ê'|'ë'|'È'|'É'|'Ê'|'Ë' => 'e',
+            'ì'|'í'|'î'|'ï'|'Ì'|'Í'|'Î'|'Ï' => 'i',
+            'ò'|'ó'|'ô'|'õ'|'ö'|'ø'|'Ò'|'Ó'|'Ô'|'Õ'|'Ö'|'Ø'|'œ'|'Œ' => 'o',
+            'ù'|'ú'|'û'|'ü'|'Ù'|'Ú'|'Û'|'Ü' => 'u',
+            'ý'|'ÿ'|'Ý'|'Ÿ' => 'y',
+            'ñ'|'Ñ' => 'n',
+            'ç'|'Ç' => 'c',
+            'ß' => 's',
+            _ => c,
+        }
+    }
+
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let ch = fold(ch);
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if ch == '_' {
+            if !out.ends_with('_') && !out.ends_with('-') {
+                out.push('_');
+            }
+        } else if ch.is_alphanumeric() || ch == ' ' || ch == '-' {
+            if !out.ends_with('-') && !out.ends_with('_') {
+                out.push('-');
+            }
+        } else {
+            if !out.ends_with('_') && !out.ends_with('-') {
+                out.push('_');
+            }
+        }
+    }
+    out.trim_matches(|c| c == '-' || c == '_').to_owned()
 }
 
 /// Return a file name `"{stem}.yaml"` that does not exist in `existing`.
@@ -651,6 +736,21 @@ fn renumber_files(
         }
     }
     Ok(renames)
+}
+
+/// Rename all YAML files directly inside `folder_abs` to canonical
+/// `{idx}-{uid}-{slug}.yaml` format (1-based index, existing sort order preserved).
+fn normalize_dir(folder_abs: &Path) -> Result<(), ModelError> {
+    let files = yaml_files_in(folder_abs)?;
+    for (i, old_abs) in files.iter().enumerate() {
+        let req: RequestDef = load_yaml(old_abs)?;
+        let expected = format!("{}-{}-{}.yaml", i + 1, req.uid, safe_file_slug(&req.name));
+        let current = old_abs.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if current != expected {
+            std::fs::rename(old_abs, folder_abs.join(&expected))?;
+        }
+    }
+    Ok(())
 }
 
 fn load_yaml<T>(path: &Path) -> Result<T, ModelError>
@@ -1043,16 +1143,86 @@ mod tests {
     // ── rename_request_name ───────────────────────────────────────────────
 
     #[test]
-    fn rename_request_name_updates_name_only() {
+    fn rename_request_renames_file_and_updates_name() {
         let tmp = TempDir::new().unwrap();
         write(tmp.path(), "requests/ping.yaml",
-            "id: ping\nname: Ping\nmethod: GET\nurl: /ping\n");
+            "uid: TESTUID1\nid: ping\nname: Ping\nmethod: GET\nurl: /ping\n");
         let loader = ProjectLoader::new(tmp.path());
-        loader.rename_request_name(std::path::Path::new("requests/ping.yaml"), "Health Check").unwrap();
+        let new_path = loader.rename_request_name(
+            std::path::Path::new("requests/ping.yaml"), "Health Check").unwrap();
+        assert!(!tmp.path().join("requests/ping.yaml").exists());
+        assert!(tmp.path().join("requests/TESTUID1-health-check.yaml").exists());
+        assert_eq!(new_path.to_string_lossy(), "requests/TESTUID1-health-check.yaml");
         let entries = loader.load_requests().unwrap();
-        let ping = entries.iter().find(|e| e.request.id == "ping").unwrap();
-        assert_eq!(ping.request.name, "Health Check");
-        assert_eq!(ping.request.id, "ping");
+        let req = entries.iter().find(|e| e.request.id == "ping").unwrap();
+        assert_eq!(req.request.name, "Health Check");
+        assert_eq!(req.request.id, "ping");
+    }
+
+    #[test]
+    fn rename_request_preserves_numeric_prefix() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "requests/10-arturo-b-copy.yaml",
+            "uid: TESTUID2\nid: arturo.b-copy\nname: Arturo B copy\nmethod: GET\nurl: /users\n");
+        let loader = ProjectLoader::new(tmp.path());
+        let new_path = loader.rename_request_name(
+            std::path::Path::new("requests/10-arturo-b-copy.yaml"), "Arturo B").unwrap();
+        assert!(!tmp.path().join("requests/10-arturo-b-copy.yaml").exists());
+        assert!(tmp.path().join("requests/10-TESTUID2-arturo-b.yaml").exists());
+        assert_eq!(new_path.to_string_lossy(), "requests/10-TESTUID2-arturo-b.yaml");
+    }
+
+    // ── safe_file_slug ────────────────────────────────────────────────────
+
+    #[test]
+    fn safe_file_slug_folds_accented_chars() {
+        assert_eq!(safe_file_slug("García"), "garcia");
+        assert_eq!(safe_file_slug("São Paulo"), "sao-paulo");
+        assert_eq!(safe_file_slug("café"), "cafe");
+        assert_eq!(safe_file_slug("Ångström"), "angstrom");
+        assert_eq!(safe_file_slug("naïve"), "naive");
+    }
+
+    #[test]
+    fn safe_file_slug_replaces_unsafe_chars() {
+        // space before '(' collapses: the '-' absorbs the paren into a single separator
+        assert_eq!(safe_file_slug("Get (Users)"), "get-users");
+        assert_eq!(safe_file_slug("A+B"), "a_b");
+        assert_eq!(safe_file_slug("hello world"), "hello-world");
+        assert_eq!(safe_file_slug("foo (bar+baz)"), "foo-bar_baz");
+    }
+
+    // ── normalize_file_names ──────────────────────────────────────────────
+
+    #[test]
+    fn normalize_file_names_renames_to_canonical_format() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "requests/1-arturo/arturo-b-copy.yaml",
+            "uid: AAABBB11\nid: arturo.b-copy\nname: Arturo B\nmethod: GET\nurl: /users\n");
+        write(tmp.path(), "requests/1-arturo/old-name.yaml",
+            "uid: CCCDDD22\nid: arturo.ps-copy\nname: Santiago García\nmethod: GET\nurl: /sg\n");
+        let loader = ProjectLoader::new(tmp.path());
+        loader.normalize_file_names().unwrap();
+
+        let folder = tmp.path().join("requests/1-arturo");
+        assert!(folder.join("1-AAABBB11-arturo-b.yaml").exists(), "first file should be renamed");
+        assert!(folder.join("2-CCCDDD22-santiago-garcia.yaml").exists(), "second file with accented name");
+        assert!(!folder.join("arturo-b-copy.yaml").exists());
+        assert!(!folder.join("old-name.yaml").exists());
+    }
+
+    #[test]
+    fn normalize_file_names_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "requests/login.yaml",
+            "uid: IDEM0001\nid: login\nname: Login\nmethod: POST\nurl: /login\n");
+        let loader = ProjectLoader::new(tmp.path());
+        loader.normalize_file_names().unwrap();
+        // First pass: should rename to canonical
+        assert!(tmp.path().join("requests/1-IDEM0001-login.yaml").exists());
+        // Second pass: should be a no-op
+        loader.normalize_file_names().unwrap();
+        assert!(tmp.path().join("requests/1-IDEM0001-login.yaml").exists());
     }
 
     // ── move_request ──────────────────────────────────────────────────────

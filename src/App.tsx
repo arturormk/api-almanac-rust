@@ -2438,9 +2438,12 @@ export default function App() {
   async function renameRequestName(filePath: string, newName: string) {
     if (!newName.trim()) return;
     try {
-      const data = await invoke<ProjectData>("rename_request", { filePath, newName: newName.trim() });
-      setProject(data);
-      if (selectedFilePath === filePath) setReqName(newName.trim());
+      const result = await invoke<MoveResult>("rename_request", { filePath, newName: newName.trim() });
+      setProject(result.project);
+      if (selectedFilePath === filePath) {
+        setSelectedFilePath(result.new_file_path);
+        setReqName(newName.trim());
+      }
     } catch (e) { setReqError(String(e)); }
   }
 
