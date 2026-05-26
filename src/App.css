@@ -1227,6 +1227,11 @@
   padding: 4px 0;
 }
 
+.expects-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .expects-scalars {
   display: flex;
   align-items: center;
@@ -2200,4 +2205,158 @@
   background: var(--bg-2);
   color: var(--text-dim);
   border: 1px solid var(--border);
+}
+
+/* ── Body view toggle (Raw / Tree) ──────────────────────────────────────── */
+
+.body-view-toggle {
+  display: flex;
+  gap: 2px;
+}
+
+.body-view-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 1.6;
+}
+
+.body-view-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.body-view-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ── JSON tree view ─────────────────────────────────────────────────────── */
+
+.json-tree {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  overflow-x: auto;
+}
+
+.json-tree-row {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  padding-left: calc(var(--depth, 0) * 16px);
+  white-space: nowrap;
+}
+
+.json-tree-expandable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.json-tree-expandable:hover > .json-key,
+.json-tree-expandable:hover > .json-bracket,
+.json-tree-expandable:hover > .json-summary {
+  opacity: 0.75;
+}
+
+.json-toggle {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.json-toggle-ph {
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.json-key   { color: var(--text); }
+.json-colon { color: var(--text-dim); margin-right: 2px; }
+.json-bracket { color: var(--text-dim); }
+.json-summary { color: var(--text-dim); font-style: italic; }
+
+.json-string { color: var(--accent); }
+.json-number { color: #6ab0f5; }
+.json-bool   { color: #e8a44d; }
+.json-null   { color: var(--text-dim); font-style: italic; }
+
+/* ── Editable JSON tree ──────────────────────────────────────────────────── */
+
+.json-tree-editable .json-tree-row {
+  align-items: center;
+  position: relative;
+}
+
+.json-input {
+  font: inherit;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: inherit;
+  padding: 0 1px;
+  min-width: 2ch;
+  outline: none;
+  line-height: inherit;
+}
+
+.json-input:focus {
+  border-bottom-color: var(--accent);
+}
+
+.json-input.json-key   { color: var(--text); }
+.json-input.json-string { color: var(--accent); }
+.json-input.json-number { color: #6ab0f5; }
+.json-input.json-bool   { color: #e8a44d; }
+.json-input.json-null   { color: var(--text-dim); font-style: italic; }
+
+.json-delete-btn {
+  display: none;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 3px;
+  font-size: 13px;
+  line-height: 1;
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
+.json-tree-row:hover .json-delete-btn {
+  display: inline;
+}
+
+.json-delete-btn:hover {
+  color: #f47474;
+}
+
+.json-add-row {
+  display: flex;
+  gap: 4px;
+  margin: 3px 0;
+  padding-left: calc(var(--depth, 0) * 16px + 14px);
+}
+
+.json-add-btn {
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--text-dim) 40%, transparent);
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.json-add-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
 }

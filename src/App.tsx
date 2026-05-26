@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   DndContext,
@@ -199,6 +199,45 @@ function mapToRows(m: Record<string, string>): KvRow[] {
   return rows.length > 0 ? rows : [mkRow()];
 }
 
+function mapToRowsSorted(m: Record<string, string>): KvRow[] {
+  const rows = Object.entries(m).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => mkRow(k, v));
+  return rows.length > 0 ? rows : [mkRow()];
+}
+
+function flattenJsonFields(obj: unknown, prefix = ""): Record<string, string> {
+  if (obj === null) return prefix ? { [prefix]: "null" } : {};
+  if (typeof obj !== "object") return prefix ? { [prefix]: String(obj) } : {};
+  const result: Record<string, string> = {};
+  const entries: [string, unknown][] = Array.isArray(obj)
+    ? obj.map((v, i) => [`[${i}]`, v])
+    : Object.entries(obj as Record<string, unknown>);
+  if (Array.isArray(obj) && obj.length === 0) {
+    if (prefix) result[prefix] = "exists";
+    return result;
+  }
+  for (const [k, v] of entries) {
+    const path = prefix ? (k.startsWith("[") ? `${prefix}${k}` : `${prefix}.${k}`) : k;
+    if (v === null) {
+      result[path] = "null";
+    } else if (typeof v !== "object") {
+      result[path] = String(v);
+    } else {
+      Object.assign(result, flattenJsonFields(v, path));
+    }
+  }
+  return result;
+}
+
+const EPHEMERAL_HEADERS = new Set([
+  "date", "age", "etag", "expires", "last-modified", "set-cookie",
+  "x-request-id", "x-correlation-id", "x-trace-id",
+  "x-b3-traceid", "x-b3-spanid",
+  "cf-ray",
+  "x-amzn-requestid", "x-amz-request-id", "x-amz-id-2",
+  "x-cache", "x-runtime", "x-response-time", "server-timing",
+  "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset",
+]);
+
 function slugify(s: string): string {
   return s
     .toLowerCase()
@@ -336,14 +375,21 @@ function ExpectationsEditor({
   timeMs, onTimeMsChange,
   headers, onHeadersChange,
   json, onJsonChange,
+  onImportFromResponse,
 }: {
   status: string; onStatusChange: (v: string) => void;
   timeMs: string; onTimeMsChange: (v: string) => void;
   headers: KvRow[]; onHeadersChange: (rows: KvRow[]) => void;
   json: KvRow[]; onJsonChange: (rows: KvRow[]) => void;
+  onImportFromResponse?: () => void;
 }) {
   return (
     <div className="expects-editor">
+      {onImportFromResponse && (
+        <div className="expects-actions">
+          <button className="sketch-btn" onClick={onImportFromResponse}>Import from Result</button>
+        </div>
+      )}
       <div className="expects-scalars">
         <label className="expects-label">Status</label>
         <input
@@ -398,16 +444,331 @@ function StatusBadge({ status }: { status: number }) {
   return <span className={`status-badge ${cls}`}>{status}</span>;
 }
 
+// ── JSON tree view ─────────────────────────────────────────────────────────
+
+function isValidJson(s: string): boolean {
+  if (!s.trim()) return false;
+  try { JSON.parse(s); return true; } catch { return false; }
+}
+
+function JsonTreeNode({ label, value, depth }: { label?: string; value: unknown; depth: number }) {
+  const isObj = value !== null && typeof value === "object";
+  const isArr = Array.isArray(value);
+  const entries: [string, unknown][] = isObj
+    ? isArr
+      ? (value as unknown[]).map((v, i) => [String(i), v])
+      : Object.entries(value as Record<string, unknown>)
+    : [];
+  const [open, setOpen] = useState(depth < 2);
+
+  if (!isObj) {
+    let cls = "json-null";
+    let display = "null";
+    if (typeof value === "string") { cls = "json-string"; display = `"${value}"`; }
+    else if (typeof value === "number") { cls = "json-number"; display = String(value); }
+    else if (typeof value === "boolean") { cls = "json-bool"; display = String(value); }
+    return (
+      <div className="json-tree-row" style={{ "--depth": depth } as CSSProperties}>
+        <span className="json-toggle-ph" />
+        {label !== undefined && <><span className="json-key">"{label}"</span><span className="json-colon">: </span></>}
+        <span className={cls}>{display}</span>
+      </div>
+    );
+  }
+
+  const ob = isArr ? "[" : "{";
+  const cb = isArr ? "]" : "}";
+
+  return (
+    <>
+      <div className="json-tree-row json-tree-expandable" style={{ "--depth": depth } as CSSProperties}
+        onClick={() => setOpen((o) => !o)}>
+        <span className="json-toggle">{open ? "▾" : "▸"}</span>
+        {label !== undefined && <><span className="json-key">"{label}"</span><span className="json-colon">: </span></>}
+        {open
+          ? <span className="json-bracket">{ob}</span>
+          : <span className="json-summary">{ob} {entries.length} {cb}</span>}
+      </div>
+      {open && (
+        <>
+          {entries.map(([k, v]) => (
+            <JsonTreeNode key={k} label={isArr ? undefined : k} value={v} depth={depth + 1} />
+          ))}
+          <div className="json-tree-row" style={{ "--depth": depth } as CSSProperties}>
+            <span className="json-toggle-ph" />
+            <span className="json-bracket">{cb}</span>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function JsonTreeView({ body }: { body: string }) {
+  let parsed: unknown;
+  try { parsed = JSON.parse(body); } catch { return <pre className="response-body">{body}</pre>; }
+  return <div className="json-tree"><JsonTreeNode value={parsed} depth={0} /></div>;
+}
+
+// ── Editable JSON tree ──────────────────────────────────────────────────────
+
+type JsonPath = (string | number)[];
+
+function setAtPath(root: unknown, path: JsonPath, val: unknown): unknown {
+  if (path.length === 0) return val;
+  const [h, ...rest] = path;
+  if (Array.isArray(root)) {
+    const a = [...(root as unknown[])];
+    a[h as number] = setAtPath(a[h as number], rest, val);
+    return a;
+  }
+  const o = { ...(root as Record<string, unknown>) };
+  o[h as string] = setAtPath(o[h as string], rest, val);
+  return o;
+}
+
+function deleteAtPath(root: unknown, path: JsonPath): unknown {
+  if (path.length === 0) return root;
+  const [h, ...rest] = path;
+  if (path.length === 1) {
+    if (Array.isArray(root)) return (root as unknown[]).filter((_, i) => i !== h);
+    const o = { ...(root as Record<string, unknown>) };
+    delete o[h as string];
+    return o;
+  }
+  if (Array.isArray(root)) {
+    const a = [...(root as unknown[])];
+    a[h as number] = deleteAtPath(a[h as number], rest);
+    return a;
+  }
+  const o = { ...(root as Record<string, unknown>) };
+  o[h as string] = deleteAtPath(o[h as string], rest);
+  return o;
+}
+
+function renameKeyInObj(
+  obj: Record<string, unknown>,
+  oldKey: string,
+  newKey: string,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) result[k === oldKey ? newKey : k] = v;
+  return result;
+}
+
+function uniqueKey(obj: Record<string, unknown>, base: string): string {
+  if (!(base in obj)) return base;
+  let i = 1;
+  while ((`${base}${i}`) in obj) i++;
+  return `${base}${i}`;
+}
+
+function coerceInput(s: string): unknown {
+  const t = s.trim();
+  if (t === "true") return true;
+  if (t === "false") return false;
+  if (t === "null") return null;
+  if (t !== "" && !isNaN(Number(t))) return Number(t);
+  return s;
+}
+
+function scalarStr(v: unknown): string {
+  return v === null ? "null" : String(v);
+}
+
+function EditableJsonTreeNode({
+  label,
+  path,
+  value,
+  depth,
+  onUpdate,
+  onDelete,
+  onRenameKey,
+}: {
+  label?: string;
+  path: JsonPath;
+  value: unknown;
+  depth: number;
+  onUpdate: (path: JsonPath, value: unknown) => void;
+  onDelete: (path: JsonPath) => void;
+  onRenameKey?: (oldKey: string, newKey: string) => void;
+}) {
+  const isObj = value !== null && typeof value === "object";
+  const isArr = Array.isArray(value);
+  const [open, setOpen] = useState(depth < 2);
+  const [keyEdit, setKeyEdit] = useState(label ?? "");
+  const [valEdit, setValEdit] = useState(() => scalarStr(value));
+
+  useEffect(() => setKeyEdit(label ?? ""), [label]);
+  useEffect(() => { if (!isObj) setValEdit(scalarStr(value)); }, [value, isObj]);
+
+  const showDelete = path.length > 0;
+
+  const keyPart = label !== undefined ? (
+    <>
+      <input
+        className="json-input json-key"
+        value={keyEdit}
+        size={Math.max(keyEdit.length, 2)}
+        onChange={(e) => setKeyEdit(e.target.value)}
+        onBlur={() => {
+          const nk = keyEdit.trim();
+          if (nk && nk !== label) onRenameKey?.(label, nk);
+          else setKeyEdit(label);
+        }}
+        onClick={(e) => e.stopPropagation()}
+      />
+      <span className="json-colon">: </span>
+    </>
+  ) : null;
+
+  const delBtn = showDelete ? (
+    <button
+      className="json-delete-btn"
+      onClick={(e) => { e.stopPropagation(); onDelete(path); }}
+      title="Remove"
+    >×</button>
+  ) : null;
+
+  if (!isObj) {
+    const cls = typeof value === "string" ? "json-string"
+      : typeof value === "number" ? "json-number"
+      : typeof value === "boolean" ? "json-bool"
+      : "json-null";
+
+    return (
+      <div className="json-tree-row" style={{ "--depth": depth } as CSSProperties}>
+        <span className="json-toggle-ph" />
+        {keyPart}
+        <input
+          className={`json-input ${cls}`}
+          value={valEdit}
+          size={Math.max(valEdit.length, 2)}
+          onChange={(e) => setValEdit(e.target.value)}
+          onBlur={() => onUpdate(path, coerceInput(valEdit))}
+          onClick={(e) => e.stopPropagation()}
+        />
+        {delBtn}
+      </div>
+    );
+  }
+
+  const entries: [string, unknown][] = isArr
+    ? (value as unknown[]).map((v, i) => [String(i), v])
+    : Object.entries(value as Record<string, unknown>);
+  const ob = isArr ? "[" : "{";
+  const cb = isArr ? "]" : "}";
+
+  return (
+    <>
+      <div
+        className="json-tree-row json-tree-expandable"
+        style={{ "--depth": depth } as CSSProperties}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="json-toggle">{open ? "▾" : "▸"}</span>
+        {keyPart}
+        {open
+          ? <span className="json-bracket">{ob}</span>
+          : <span className="json-summary">{ob} {entries.length} {cb}</span>}
+        {delBtn}
+      </div>
+      {open && (
+        <>
+          {entries.map(([k, v]) => {
+            const childPath: JsonPath = [...path, isArr ? Number(k) : k];
+            return (
+              <EditableJsonTreeNode
+                key={k}
+                label={isArr ? undefined : k}
+                path={childPath}
+                value={v}
+                depth={depth + 1}
+                onUpdate={onUpdate}
+                onDelete={onDelete}
+                onRenameKey={isArr ? undefined : (oldKey, newKey) => {
+                  onUpdate(path, renameKeyInObj(value as Record<string, unknown>, oldKey, newKey));
+                }}
+              />
+            );
+          })}
+          <div className="json-add-row" style={{ "--depth": depth } as CSSProperties}>
+            {isArr ? (
+              <>
+                <button className="json-add-btn" onClick={() => onUpdate(path, [...(value as unknown[]), ""])}>+ value</button>
+                <button className="json-add-btn" onClick={() => onUpdate(path, [...(value as unknown[]), {}])}>{"+ {}"}</button>
+                <button className="json-add-btn" onClick={() => onUpdate(path, [...(value as unknown[]), []])}>+ []</button>
+              </>
+            ) : (
+              <button className="json-add-btn" onClick={() => {
+                const obj = value as Record<string, unknown>;
+                onUpdate(path, { ...obj, [uniqueKey(obj, "field")]: "" });
+              }}>+ field</button>
+            )}
+          </div>
+          <div className="json-tree-row" style={{ "--depth": depth } as CSSProperties}>
+            <span className="json-toggle-ph" />
+            <span className="json-bracket">{cb}</span>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function EditableJsonTreeView({ body, onChange }: { body: string; onChange: (s: string) => void }) {
+  const [data, setData] = useState<unknown>(() => JSON.parse(body));
+  const lastBodyRef = useRef(body);
+
+  useEffect(() => {
+    if (body !== lastBodyRef.current) {
+      lastBodyRef.current = body;
+      try { setData(JSON.parse(body)); } catch {}
+    }
+  }, [body]);
+
+  function commit(next: unknown) {
+    const s = JSON.stringify(next, null, 2);
+    lastBodyRef.current = s;
+    setData(next);
+    onChange(s);
+  }
+
+  return (
+    <div className="json-tree json-tree-editable">
+      <EditableJsonTreeNode
+        value={data}
+        depth={0}
+        path={[]}
+        onUpdate={(p, v) => commit(p.length === 0 ? v : setAtPath(data, p, v))}
+        onDelete={(p) => commit(deleteAtPath(data, p))}
+      />
+    </div>
+  );
+}
+
 // ── Pretty body ────────────────────────────────────────────────────────────
 
 function PrettyBody({ body, contentType }: { body: string; contentType?: string }) {
+  const [treeMode, setTreeMode] = useState(false);
   const isJson =
     contentType?.includes("json") ||
     body.trimStart().startsWith("{") ||
     body.trimStart().startsWith("[");
   if (isJson) {
     try {
-      return <pre className="response-body">{JSON.stringify(JSON.parse(body), null, 2)}</pre>;
+      const parsed = JSON.parse(body);
+      return (
+        <>
+          <div className="body-view-toggle">
+            <button className={`body-view-btn${!treeMode ? " active" : ""}`} onClick={() => setTreeMode(false)}>Raw</button>
+            <button className={`body-view-btn${treeMode ? " active" : ""}`} onClick={() => setTreeMode(true)}>Tree</button>
+          </div>
+          {treeMode
+            ? <JsonTreeView body={body} />
+            : <pre className="response-body">{JSON.stringify(parsed, null, 2)}</pre>}
+        </>
+      );
     } catch { /* fall through */ }
   }
   return <pre className="response-body">{body}</pre>;
@@ -1802,6 +2163,7 @@ export default function App() {
   const [showDryRunMenu, setShowDryRunMenu] = useState(false);
   const [lastRunCurl, setLastRunCurl] = useState<string | null>(null);
   const [mainPane, setMainPane] = useState<'request' | 'checks' | 'environments'>('request');
+  const [reqBodyView, setReqBodyView] = useState<"edit" | "tree">("edit");
   const [spotCheckSummary, setSpotCheckSummary] = useState<{ passed: number; failed: number; errored: number } | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
 
@@ -1854,8 +2216,8 @@ export default function App() {
     setCaptures(mapToRows(data.capture ?? {}));
     setExpectStatus(data.expect?.status != null ? String(data.expect.status) : "");
     setExpectTimeMs(data.expect?.time_ms ?? "");
-    setExpectHeaders(mapToRows(data.expect?.headers ?? {}));
-    setExpectJson(mapToRows(data.expect?.json ?? {}));
+    setExpectHeaders(mapToRowsSorted(data.expect?.headers ?? {}));
+    setExpectJson(mapToRowsSorted(data.expect?.json ?? {}));
     const newCases: Record<string, KvRow[]> = {};
     for (const [name, vars] of Object.entries(data.cases ?? {})) {
       newCases[name] = mapToRows(vars);
@@ -1867,6 +2229,31 @@ export default function App() {
     setSelectedCase("");
     setIsDirty(false);
     setSaveStatus("idle");
+  }
+
+  function handleImportExpects() {
+    if (!response) return;
+
+    const hdrs = Object.entries(response.headers)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => mkRow(k, EPHEMERAL_HEADERS.has(k.toLowerCase()) ? "exists" : v));
+    setExpectHeaders(hdrs.length > 0 ? hdrs : [mkRow()]);
+
+    const ct = response.headers["content-type"] ?? "";
+    if (ct.includes("json") || response.body.trimStart().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(response.body);
+        const fields = flattenJsonFields(parsed);
+        const rows = Object.entries(fields)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => mkRow(k, v));
+        setExpectJson(rows.length > 0 ? rows : [mkRow()]);
+      } catch { /* ignore */ }
+    } else {
+      setExpectJson([mkRow()]);
+    }
+
+    if (isProjectMode) markDirty();
   }
 
   function buildRequestData(overrides?: Partial<RequestData>): RequestData {
@@ -2541,13 +2928,27 @@ export default function App() {
                     </label>
                   ))}
                 </div>
-                {bodyKind !== "none" && (
+                {bodyKind === "json" && isValidJson(bodyContent) && (
+                  <div className="body-view-toggle">
+                    <button className={`body-view-btn${reqBodyView === "edit" ? " active" : ""}`}
+                      onClick={() => setReqBodyView("edit")}>Raw</button>
+                    <button className={`body-view-btn${reqBodyView === "tree" ? " active" : ""}`}
+                      onClick={() => setReqBodyView("tree")}>Tree</button>
+                  </div>
+                )}
+                {bodyKind !== "none" && (bodyKind !== "json" || reqBodyView === "edit") && (
                   <textarea
                     className="body-textarea"
                     placeholder={bodyKind === "json" ? '{\n  "key": "value"\n}' : bodyKind === "form" ? "key=value&key2=value2" : "Request body"}
                     value={bodyContent}
                     onChange={(e) => { setBodyContent(e.target.value); if (isProjectMode) markDirty(); }}
                     spellCheck={false}
+                  />
+                )}
+                {bodyKind === "json" && reqBodyView === "tree" && (
+                  <EditableJsonTreeView
+                    body={bodyContent}
+                    onChange={(v) => { setBodyContent(v); if (isProjectMode) markDirty(); }}
                   />
                 )}
                 {bodyKind !== "none" && !methodsWithBody.includes(method) && (
@@ -2677,6 +3078,7 @@ export default function App() {
                 onHeadersChange={(v) => { setExpectHeaders(v); if (isProjectMode) markDirty(); }}
                 json={expectJson}
                 onJsonChange={(v) => { setExpectJson(v); if (isProjectMode) markDirty(); }}
+                onImportFromResponse={response ? handleImportExpects : undefined}
               />
             )}
           </div>
