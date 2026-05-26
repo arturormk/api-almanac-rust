@@ -33,13 +33,18 @@ my-project/
 
 ### Sidebar display order
 
-Folders and request files are displayed in the order determined by an optional `N-` numeric prefix on the file or directory name:
+Folders and request files are displayed in the order determined by a numeric prefix on the file or directory name. The prefix format differs between folders and files:
 
-- `1-login.yaml` sorts before `2-register.yaml` sorts before `10-verify.yaml`
-- `requests/1-auth/1-login.yaml` — folder `auth` is first; `login` is first within it
+- **Folder prefixes** — unpadded integer followed by a dash: `1-auth/`, `2-users/`
+- **Request file prefixes** — four-digit zero-padded integer, then a UID, then a slug: `0001-A1B2C3D4-login.yaml`, `0002-B2C3D4E5-register.yaml`
+
+Examples:
+
+- `0001-A1B2C3D4-login.yaml` sorts before `0002-B2C3D4E5-register.yaml` sorts before `0010-C3D4E5F6-verify.yaml`
+- `requests/1-auth/0001-A1B2C3D4-login.yaml` — folder `auth` is first; `login` is first within it
 - Files and folders without a numeric prefix are sorted after all prefixed siblings
 
-**When generating a new project from scratch, omit the numeric prefix entirely.** The app assigns prefixes when the user drags to reorder. Plain names like `requests/auth/login.yaml` are valid and will appear in alphabetical order.
+**When generating a new project from scratch, omit all numeric prefixes.** The app assigns them automatically: when a project is first opened all request files are renamed to the canonical `{0001}-{uid}-{slug}.yaml` form, and new or duplicated requests are placed at the end of their folder with the next available index. Plain names like `requests/auth/login.yaml` are valid and will appear in alphabetical order.
 
 ---
 
@@ -307,7 +312,7 @@ Variable names may contain dots (e.g. `user.email`, `created_user.id`). Dots are
 | Project `id`       | kebab-case slug                                    | `stripe-api`                   |
 | Environment `id`   | lowercase word or kebab-case; equals filename stem | `local`, `staging`             |
 | Request `id`       | dot-notation: `group.action`                       | `users.create`, `auth.login`   |
-| Request filename   | kebab-case, matches the action part of the id      | `requests/users/create.yaml`   |
+| Request filename   | Plain kebab-case when hand-authored; app normalizes to `{0001}-{uid}-{slug}.yaml` on first open | `requests/users/create.yaml` → `requests/users/0001-A1B2C3D4-create.yaml` |
 | Folder grouping    | Group by API resource or feature area              | `auth/`, `users/`, `payments/` |
 | Variable names     | dot-notation; be consistent across requests        | `user.id`, `auth.token`        |
 | Secret env vars    | UPPER_SNAKE_CASE OS env var name                   | `{{secret.STRIPE_API_KEY}}`    |

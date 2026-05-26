@@ -254,7 +254,7 @@ impl ProjectLoader {
         let new_file_name = if prefix_num == u32::MAX {
             format!("{}-{new_slug}.yaml", req.uid)
         } else {
-            format!("{prefix_num}-{}-{new_slug}.yaml", req.uid)
+            format!("{:04}-{}-{new_slug}.yaml", prefix_num, req.uid)
         };
 
         let folder_abs = abs.parent().ok_or_else(|| {
@@ -355,8 +355,8 @@ impl ProjectLoader {
         new_req.id = new_id;
         new_req.name = new_name;
 
-        // UID guarantees uniqueness; no collision check needed.
-        let new_file_name = format!("{}-{}.yaml", new_req.uid, safe_file_slug(&new_req.name));
+        let next_idx = (siblings.len() + 1) as u32;
+        let new_file_name = format!("{:04}-{}-{}.yaml", next_idx, new_req.uid, safe_file_slug(&new_req.name));
         let new_rel_path = relative_path
             .parent()
             .map(|p| p.join(&new_file_name))
@@ -364,6 +364,28 @@ impl ProjectLoader {
 
         self.save_request(&new_rel_path, &new_req)?;
         Ok(new_rel_path)
+    }
+
+    /// Create a new request at the end of the given folder, assigning the next 4-digit index.
+    /// `folder` is relative to `requests/` (empty string for the root).
+    /// Returns the path relative to the project root.
+    pub fn create_request(&self, folder: &str, req: &RequestDef) -> Result<PathBuf, ModelError> {
+        let folder_dir = if folder.is_empty() {
+            self.root.join("requests")
+        } else {
+            self.root.join("requests").join(folder)
+        };
+        std::fs::create_dir_all(&folder_dir)?;
+        let existing = yaml_files_in(&folder_dir)?;
+        let next_idx = (existing.len() + 1) as u32;
+        let file_name = format!("{:04}-{}-{}.yaml", next_idx, req.uid, safe_file_slug(&req.name));
+        let rel_path = if folder.is_empty() {
+            PathBuf::from("requests").join(&file_name)
+        } else {
+            PathBuf::from("requests").join(folder).join(&file_name)
+        };
+        self.save_request(&rel_path, req)?;
+        Ok(rel_path)
     }
 
     /// Ensure every request YAML file under `requests/` has a non-empty, unique `uid`.
@@ -623,21 +645,6 @@ fn safe_file_slug(s: &str) -> String {
 
 /// Return a file name `"{stem}.yaml"` that does not exist in `existing`.
 /// Falls back to `"{stem}-2.yaml"`, `"{stem}-3.yaml"`, etc.
-fn unique_file_name(stem: &str, existing: &std::collections::HashSet<String>) -> String {
-    let candidate = format!("{stem}.yaml");
-    if !existing.contains(&candidate) {
-        return candidate;
-    }
-    let mut i = 2u32;
-    loop {
-        let candidate = format!("{stem}-{i}.yaml");
-        if !existing.contains(&candidate) {
-            return candidate;
-        }
-        i += 1;
-    }
-}
-
 /// Sort key: `(numeric_prefix, lowercase_remainder)` from the last path component.
 fn order_key(path: &Path) -> (u32, String) {
     let name = path
@@ -720,7 +727,7 @@ fn renumber_files(
         let n = (i + 1) as u32;
         let stem = old_abs.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let bare = strip_order_prefix(stem);
-        let new_name = format!("{n}-{bare}.yaml");
+        let new_name = format!("{n:04}-{bare}.yaml");
         let new_abs = folder_abs.join(&new_name);
         if old_abs != &new_abs {
             std::fs::rename(old_abs, &new_abs)?;
@@ -744,7 +751,7 @@ fn normalize_dir(folder_abs: &Path) -> Result<(), ModelError> {
     let files = yaml_files_in(folder_abs)?;
     for (i, old_abs) in files.iter().enumerate() {
         let req: RequestDef = load_yaml(old_abs)?;
-        let expected = format!("{}-{}-{}.yaml", i + 1, req.uid, safe_file_slug(&req.name));
+        let expected = format!("{:04}-{}-{}.yaml", i + 1, req.uid, safe_file_slug(&req.name));
         let current = old_abs.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if current != expected {
             std::fs::rename(old_abs, folder_abs.join(&expected))?;
@@ -1168,8 +1175,8 @@ mod tests {
         let new_path = loader.rename_request_name(
             std::path::Path::new("requests/10-arturo-b-copy.yaml"), "Arturo B").unwrap();
         assert!(!tmp.path().join("requests/10-arturo-b-copy.yaml").exists());
-        assert!(tmp.path().join("requests/10-TESTUID2-arturo-b.yaml").exists());
-        assert_eq!(new_path.to_string_lossy(), "requests/10-TESTUID2-arturo-b.yaml");
+        assert!(tmp.path().join("requests/0010-TESTUID2-arturo-b.yaml").exists());
+        assert_eq!(new_path.to_string_lossy(), "requests/0010-TESTUID2-arturo-b.yaml");
     }
 
     // ── safe_file_slug ────────────────────────────────────────────────────
@@ -1205,8 +1212,8 @@ mod tests {
         loader.normalize_file_names().unwrap();
 
         let folder = tmp.path().join("requests/1-arturo");
-        assert!(folder.join("1-AAABBB11-arturo-b.yaml").exists(), "first file should be renamed");
-        assert!(folder.join("2-CCCDDD22-santiago-garcia.yaml").exists(), "second file with accented name");
+        assert!(folder.join("0001-AAABBB11-arturo-b.yaml").exists(), "first file should be renamed");
+        assert!(folder.join("0002-CCCDDD22-santiago-garcia.yaml").exists(), "second file with accented name");
         assert!(!folder.join("arturo-b-copy.yaml").exists());
         assert!(!folder.join("old-name.yaml").exists());
     }
@@ -1219,10 +1226,10 @@ mod tests {
         let loader = ProjectLoader::new(tmp.path());
         loader.normalize_file_names().unwrap();
         // First pass: should rename to canonical
-        assert!(tmp.path().join("requests/1-IDEM0001-login.yaml").exists());
+        assert!(tmp.path().join("requests/0001-IDEM0001-login.yaml").exists());
         // Second pass: should be a no-op
         loader.normalize_file_names().unwrap();
-        assert!(tmp.path().join("requests/1-IDEM0001-login.yaml").exists());
+        assert!(tmp.path().join("requests/0001-IDEM0001-login.yaml").exists());
     }
 
     // ── move_request ──────────────────────────────────────────────────────
@@ -1275,10 +1282,10 @@ mod tests {
             0,
         ).unwrap();
 
-        // verify should now be 1-verify, login→2, register→3
-        assert!(tmp.path().join("requests/1-verify.yaml").exists());
-        assert!(tmp.path().join("requests/2-login.yaml").exists());
-        assert!(tmp.path().join("requests/3-register.yaml").exists());
+        // verify should now be 0001-verify, login→0002, register→0003
+        assert!(tmp.path().join("requests/0001-verify.yaml").exists());
+        assert!(tmp.path().join("requests/0002-login.yaml").exists());
+        assert!(tmp.path().join("requests/0003-register.yaml").exists());
         assert!(!tmp.path().join("requests/3-verify.yaml").exists());
 
         assert_eq!(renames.len(), 3);
@@ -1299,8 +1306,8 @@ mod tests {
             0,
         ).unwrap();
 
-        assert!(tmp.path().join("requests/1-register.yaml").exists());
-        assert!(tmp.path().join("requests/2-login.yaml").exists());
+        assert!(tmp.path().join("requests/0001-register.yaml").exists());
+        assert!(tmp.path().join("requests/0002-login.yaml").exists());
         assert_eq!(renames.len(), 2);
     }
 
@@ -1316,9 +1323,9 @@ mod tests {
         // Position 100 should clamp to last
         loader.reorder_request(Path::new("requests/1-a.yaml"), 100).unwrap();
 
-        // a should move to the end: 1-b, 2-a
-        assert!(tmp.path().join("requests/1-b.yaml").exists());
-        assert!(tmp.path().join("requests/2-a.yaml").exists());
+        // a should move to the end: 0001-b, 0002-a
+        assert!(tmp.path().join("requests/0001-b.yaml").exists());
+        assert!(tmp.path().join("requests/0002-a.yaml").exists());
     }
 
     // ── reorder_group ─────────────────────────────────────────────────────

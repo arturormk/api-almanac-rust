@@ -2543,11 +2543,14 @@ export default function App() {
     const displayName = newReqDisplayName.trim() || "New Request";
     const id = slugify(displayName) || "new-request";
     const folder = slugify(newReqFolder);
-    const filePath = folder ? `requests/${folder}/${id}.yaml` : `requests/${id}.yaml`;
     setSaveStatus("saving");
     try {
-      await invoke("save_request", { filePath, data: buildRequestData({ id, name: displayName }) });
-      await reloadProject();
+      const result = await invoke<MoveResult>("create_request", {
+        folder,
+        data: buildRequestData({ id, name: displayName }),
+      });
+      const filePath = result.new_file_path;
+      setProject(result.project);
       const freshData = await invoke<RequestData>("get_request", { filePath });
       setSelectedFilePath(filePath);
       setReqUid(freshData.uid);

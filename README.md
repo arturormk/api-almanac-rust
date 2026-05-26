@@ -43,14 +43,16 @@ my-api/
     local.yaml
     staging.yaml
   requests/
-    auth/
-      login.yaml
-    users/
-      create.yaml
-      get.yaml
+    1-auth/
+      0001-A1B2C3D4-login.yaml
+    2-users/
+      0001-B2C3D4E5-create.yaml
+      0002-C3D4E5F6-get.yaml
   .api-almanac/        ← generated; add to .gitignore if preferred
     responses/
 ```
+
+Request files are stored as `{0001}-{uid}-{slug}.yaml`. The four-digit prefix controls sidebar order; the eight-character UID (`[A-Z0-9]`) is a stable identity that survives renames. The app assigns both automatically — you never need to write them by hand.
 
 ---
 

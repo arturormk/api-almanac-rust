@@ -589,6 +589,27 @@ fn save_request(
         .map_err(|e| e.to_string())
 }
 
+/// Create a new request at the end of the given folder with a 4-digit indexed file name.
+#[tauri::command]
+fn create_request(
+    state: State<'_, AppState>,
+    folder: String,
+    data: RequestData,
+) -> Result<MoveResult, String> {
+    let root = state.project_path.lock().unwrap().clone().ok_or("no project open")?;
+    let loader = ProjectLoader::new(&root);
+    let mut req = request_data_to_def(data);
+    if req.uid.is_empty() {
+        req.uid = generate_uid();
+    }
+    let new_rel = loader.create_request(&folder, &req).map_err(|e| e.to_string())?;
+    let project = load_project_data(&loader)?;
+    Ok(MoveResult {
+        new_file_path: new_rel.to_string_lossy().replace('\\', "/"),
+        project,
+    })
+}
+
 /// Return all variables currently held in the session (from captures).
 #[tauri::command]
 fn get_session_vars(state: State<'_, AppState>) -> HashMap<String, String> {
@@ -1235,6 +1256,7 @@ pub fn run() {
             run_project_request,
             dry_run_project_request,
             save_request,
+            create_request,
             get_session_vars,
             clear_session_vars,
             sketch_json,
