@@ -2281,13 +2281,6 @@ export default function App() {
     };
   }
 
-  async function reloadProject() {
-    try {
-      const data = await invoke<ProjectData>("reload_project");
-      setProject(data);
-    } catch { /* ignore */ }
-  }
-
   async function refreshSessionVars() {
     try {
       const vars = await invoke<Record<string, string>>("get_session_vars");
