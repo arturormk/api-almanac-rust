@@ -109,11 +109,17 @@ impl VariableResolver {
                     .join("&"),
                 _ => String::new(),
             },
+            BodyKind::Xml => match &resolved_value {
+                serde_yaml::Value::String(s) => s.clone(),
+                other => serde_yaml::to_string(other)
+                    .map_err(|e| ModelError::Yaml { path: "<body>".into(), source: e })?,
+            },
         };
         let content_type = match body.kind {
             BodyKind::Json => "application/json",
             BodyKind::Text => "text/plain",
             BodyKind::Form => "application/x-www-form-urlencoded",
+            BodyKind::Xml => "application/xml",
         };
         Ok(ResolvedBody { kind: body.kind.clone(), content, content_type })
     }

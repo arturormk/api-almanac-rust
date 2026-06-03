@@ -21,7 +21,7 @@ import "./App.css";
 // ── Types ──────────────────────────────────────────────────────────────────
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
-type BodyKind = "none" | "json" | "text" | "form";
+type BodyKind = "none" | "json" | "text" | "form" | "xml";
 type RequestTab = "params" | "headers" | "body" | "cases" | "notes" | "captures" | "expects";
 type ResponseTab = "curl" | "body" | "headers" | "sketch" | "tools";
 
@@ -451,6 +451,381 @@ function isValidJson(s: string): boolean {
   try { JSON.parse(s); return true; } catch { return false; }
 }
 
+function isValidXml(s: string): boolean {
+  const trimmed = s.trim();
+  if (!trimmed.startsWith("<")) return false;
+  const doc = new DOMParser().parseFromString(trimmed, "text/xml");
+  return doc.querySelector("parsererror") === null;
+}
+
+// ── XML node model ─────────────────────────────────────────────────────────
+
+interface XmlAttr { name: string; value: string; }
+type XmlNode =
+  | { type: "element"; tag: string; attrs: XmlAttr[]; children: XmlNode[] }
+  | { type: "text"; text: string }
+  | { type: "comment"; text: string };
+
+function domToXmlNode(n: ChildNode): XmlNode | null {
+  if (n.nodeType === Node.ELEMENT_NODE) {
+    const el = n as Element;
+    const attrs: XmlAttr[] = Array.from(el.attributes).map((a) => ({ name: a.name, value: a.value }));
+    const children: XmlNode[] = Array.from(el.childNodes)
+      .map(domToXmlNode)
+      .filter((c): c is XmlNode => c !== null);
+    return { type: "element", tag: el.tagName, attrs, children };
+  }
+  if (n.nodeType === Node.TEXT_NODE) {
+    const text = n.textContent ?? "";
+    if (!text.trim()) return null;
+    return { type: "text", text };
+  }
+  if (n.nodeType === Node.COMMENT_NODE) {
+    return { type: "comment", text: n.textContent ?? "" };
+  }
+  return null;
+}
+
+function xmlNodeToString(node: XmlNode, depth = 0): string {
+  const pad = "  ".repeat(depth);
+  if (node.type === "text") return pad + escapeXmlText(node.text);
+  if (node.type === "comment") return `${pad}<!--${node.text}-->`;
+  const attrStr = node.attrs.length
+    ? " " + node.attrs.map((a) => `${a.name}="${escapeXmlAttr(a.value)}"`).join(" ")
+    : "";
+  if (node.children.length === 0) return `${pad}<${node.tag}${attrStr}/>`;
+  if (node.children.length === 1 && node.children[0].type === "text") {
+    return `${pad}<${node.tag}${attrStr}>${escapeXmlText(node.children[0].text)}</${node.tag}>`;
+  }
+  const inner = node.children.map((c) => xmlNodeToString(c, depth + 1)).join("\n");
+  return `${pad}<${node.tag}${attrStr}>\n${inner}\n${pad}</${node.tag}>`;
+}
+
+function escapeXmlText(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function escapeXmlAttr(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+function parseXmlToNode(s: string): XmlNode | null {
+  const doc = new DOMParser().parseFromString(s.trim(), "text/xml");
+  if (doc.querySelector("parsererror")) return null;
+  const root = doc.documentElement;
+  return domToXmlNode(root);
+}
+
+// ── Read-only XML tree ─────────────────────────────────────────────────────
+
+function XmlTreeNode({ node, depth }: { node: XmlNode; depth: number }) {
+  const [open, setOpen] = useState(depth < 2);
+
+  if (node.type === "text") {
+    return (
+      <div className="xml-tree-row" style={{ "--depth": depth } as CSSProperties}>
+        <span className="xml-toggle-ph" />
+        <span className="xml-text-value">{node.text}</span>
+      </div>
+    );
+  }
+
+  if (node.type === "comment") {
+    return (
+      <div className="xml-tree-row" style={{ "--depth": depth } as CSSProperties}>
+        <span className="xml-toggle-ph" />
+        <span className="xml-summary">{`<!-- ${node.text} -->`}</span>
+      </div>
+    );
+  }
+
+  const hasChildren = node.children.length > 0;
+  const singleText = node.children.length === 1 && node.children[0].type === "text";
+
+  const attrParts = node.attrs.map((a, i) => (
+    <span key={i}>
+      {" "}<span className="xml-attr-name">{a.name}</span>
+      <span className="xml-punct">=</span>
+      <span className="xml-attr-value">"{a.value}"</span>
+    </span>
+  ));
+
+  if (!hasChildren || singleText) {
+    const textContent = singleText ? (node.children[0] as { type: "text"; text: string }).text : null;
+    return (
+      <div className="xml-tree-row" style={{ "--depth": depth } as CSSProperties}>
+        <span className="xml-toggle-ph" />
+        <span className="xml-punct">&lt;</span><span className="xml-tag">{node.tag}</span>
+        {attrParts}
+        <span className="xml-punct">&gt;</span>
+        {textContent !== null && <span className="xml-text-value">{textContent}</span>}
+        <span className="xml-punct">&lt;/</span><span className="xml-tag">{node.tag}</span><span className="xml-punct">&gt;</span>
+      </div>
+    );
+  }
+
+  const elementChildren = node.children.filter((c) => c.type !== "text" || (c as {type: string; text: string}).text.trim());
+
+  return (
+    <>
+      <div className="xml-tree-row xml-tree-expandable" style={{ "--depth": depth } as CSSProperties}
+        onClick={() => setOpen((o) => !o)}>
+        <span className="xml-toggle">{open ? "▾" : "▸"}</span>
+        <span className="xml-punct">&lt;</span><span className="xml-tag">{node.tag}</span>
+        {attrParts}
+        {open
+          ? <span className="xml-punct">&gt;</span>
+          : <><span className="xml-punct">&gt;</span><span className="xml-summary"> {elementChildren.length} children </span><span className="xml-punct">&lt;/</span><span className="xml-tag">{node.tag}</span><span className="xml-punct">&gt;</span></>}
+      </div>
+      {open && (
+        <>
+          {node.children.map((child, i) => (
+            <XmlTreeNode key={i} node={child} depth={depth + 1} />
+          ))}
+          <div className="xml-tree-row" style={{ "--depth": depth } as CSSProperties}>
+            <span className="xml-toggle-ph" />
+            <span className="xml-punct">&lt;/</span><span className="xml-tag">{node.tag}</span><span className="xml-punct">&gt;</span>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function XmlTreeView({ body }: { body: string }) {
+  const node = parseXmlToNode(body);
+  if (!node) return <pre className="response-body">{body}</pre>;
+  return <div className="xml-tree"><XmlTreeNode node={node} depth={0} /></div>;
+}
+
+// ── Editable XML tree ──────────────────────────────────────────────────────
+
+type XmlPath = number[];
+
+function setXmlAtPath(root: XmlNode, path: XmlPath, replacement: XmlNode): XmlNode {
+  if (root.type !== "element") return root;
+  if (path.length === 0) return replacement;
+  const [h, ...rest] = path;
+  const children = root.children.map((c, i) =>
+    i === h ? (rest.length === 0 ? replacement : setXmlAtPath(c, rest, replacement)) : c
+  );
+  return { ...root, children };
+}
+
+function deleteXmlAtPath(root: XmlNode, path: XmlPath): XmlNode {
+  if (root.type !== "element" || path.length === 0) return root;
+  const [h, ...rest] = path;
+  if (rest.length === 0) {
+    return { ...root, children: root.children.filter((_, i) => i !== h) };
+  }
+  const children = root.children.map((c, i) =>
+    i === h ? deleteXmlAtPath(c, rest) : c
+  );
+  return { ...root, children };
+}
+
+function EditableXmlTreeNode({
+  node,
+  depth,
+  path,
+  onUpdate,
+  onDelete,
+}: {
+  node: XmlNode;
+  depth: number;
+  path: XmlPath;
+  onUpdate: (path: XmlPath, node: XmlNode) => void;
+  onDelete: (path: XmlPath) => void;
+}) {
+  const [open, setOpen] = useState(depth < 2);
+  const showDelete = path.length > 0;
+
+  if (node.type === "text") {
+    return (
+      <div className="xml-tree-row" style={{ "--depth": depth } as CSSProperties}>
+        <span className="xml-toggle-ph" />
+        <input
+          className="xml-input xml-text-value"
+          value={node.text}
+          size={Math.max(node.text.length, 4)}
+          onChange={(e) => onUpdate(path, { type: "text", text: e.target.value })}
+          onClick={(e) => e.stopPropagation()}
+        />
+        {showDelete && (
+          <button className="xml-delete-btn" onClick={(e) => { e.stopPropagation(); onDelete(path); }} title="Remove">×</button>
+        )}
+      </div>
+    );
+  }
+
+  if (node.type === "comment") {
+    return (
+      <div className="xml-tree-row" style={{ "--depth": depth } as CSSProperties}>
+        <span className="xml-toggle-ph" />
+        <span className="xml-summary">{`<!-- ${node.text} -->`}</span>
+        {showDelete && (
+          <button className="xml-delete-btn" onClick={(e) => { e.stopPropagation(); onDelete(path); }} title="Remove">×</button>
+        )}
+      </div>
+    );
+  }
+
+  // element node
+  const singleText = node.children.length === 1 && node.children[0].type === "text";
+  const hasElementChildren = node.children.some((c) => c.type === "element");
+
+  const attrParts = node.attrs.map((a, i) => (
+    <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: "1px" }}>
+      {" "}<span className="xml-attr-name">{a.name}</span>
+      <span className="xml-punct">=</span>
+      <input
+        className="xml-input xml-attr-value"
+        value={a.value}
+        size={Math.max(a.value.length, 2)}
+        onChange={(e) => {
+          const newAttrs = node.attrs.map((attr, j) => j === i ? { ...attr, value: e.target.value } : attr);
+          onUpdate(path, { ...node, attrs: newAttrs });
+        }}
+        onClick={(e) => e.stopPropagation()}
+      />
+      <button
+        className="xml-delete-btn"
+        style={{ opacity: 0, position: "relative" }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = "1"; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = "0"; }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onUpdate(path, { ...node, attrs: node.attrs.filter((_, j) => j !== i) });
+        }}
+        title="Remove attribute"
+      >×</button>
+    </span>
+  ));
+
+  const delBtn = showDelete ? (
+    <button className="xml-delete-btn" onClick={(e) => { e.stopPropagation(); onDelete(path); }} title="Remove element">×</button>
+  ) : null;
+
+  if (!hasElementChildren && singleText) {
+    const textNode = node.children[0] as { type: "text"; text: string };
+    return (
+      <div className="xml-tree-row" style={{ "--depth": depth } as CSSProperties}>
+        <span className="xml-toggle-ph" />
+        <span className="xml-punct">&lt;</span><span className="xml-tag">{node.tag}</span>
+        {attrParts}
+        <button className="xml-add-btn" style={{ fontSize: "10px", padding: "0 3px" }}
+          onClick={(e) => { e.stopPropagation(); onUpdate(path, { ...node, attrs: [...node.attrs, { name: "attr", value: "" }] }); }}
+          title="Add attribute">+attr</button>
+        <span className="xml-punct">&gt;</span>
+        <input
+          className="xml-input xml-text-value"
+          value={textNode.text}
+          size={Math.max(textNode.text.length, 4)}
+          onChange={(e) => onUpdate(path, { ...node, children: [{ type: "text", text: e.target.value }] })}
+          onClick={(e) => e.stopPropagation()}
+        />
+        <span className="xml-punct">&lt;/</span><span className="xml-tag">{node.tag}</span><span className="xml-punct">&gt;</span>
+        {delBtn}
+      </div>
+    );
+  }
+
+  if (node.children.length === 0) {
+    return (
+      <div className="xml-tree-row" style={{ "--depth": depth } as CSSProperties}>
+        <span className="xml-toggle-ph" />
+        <span className="xml-punct">&lt;</span><span className="xml-tag">{node.tag}</span>
+        {attrParts}
+        <button className="xml-add-btn" style={{ fontSize: "10px", padding: "0 3px" }}
+          onClick={(e) => { e.stopPropagation(); onUpdate(path, { ...node, attrs: [...node.attrs, { name: "attr", value: "" }] }); }}
+          title="Add attribute">+attr</button>
+        <span className="xml-punct">/&gt;</span>
+        {delBtn}
+        <div className="xml-add-row" style={{ "--depth": 0 } as CSSProperties}>
+          <button className="xml-add-btn" onClick={(e) => { e.stopPropagation(); onUpdate(path, { ...node, children: [{ type: "element", tag: "item", attrs: [], children: [] }] }); }}>+ element</button>
+          <button className="xml-add-btn" onClick={(e) => { e.stopPropagation(); onUpdate(path, { ...node, children: [{ type: "text", text: "" }] }); }}>+ text</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="xml-tree-row xml-tree-expandable" style={{ "--depth": depth } as CSSProperties}
+        onClick={() => setOpen((o) => !o)}>
+        <span className="xml-toggle">{open ? "▾" : "▸"}</span>
+        <span className="xml-punct">&lt;</span><span className="xml-tag">{node.tag}</span>
+        {attrParts}
+        {open
+          ? <><button className="xml-add-btn" style={{ fontSize: "10px", padding: "0 3px" }}
+              onClick={(e) => { e.stopPropagation(); onUpdate(path, { ...node, attrs: [...node.attrs, { name: "attr", value: "" }] }); }}
+              title="Add attribute">+attr</button>
+              <span className="xml-punct">&gt;</span></>
+          : <><span className="xml-punct">&gt;</span>
+              <span className="xml-summary"> {node.children.filter(c => c.type === "element").length} children </span>
+              <span className="xml-punct">&lt;/</span><span className="xml-tag">{node.tag}</span><span className="xml-punct">&gt;</span></>}
+        {delBtn}
+      </div>
+      {open && (
+        <>
+          {node.children.map((child, i) => (
+            <EditableXmlTreeNode
+              key={i}
+              node={child}
+              depth={depth + 1}
+              path={[...path, i]}
+              onUpdate={onUpdate}
+              onDelete={onDelete}
+            />
+          ))}
+          <div className="xml-add-row" style={{ "--depth": depth } as CSSProperties}>
+            <button className="xml-add-btn" onClick={(e) => { e.stopPropagation(); onUpdate(path, { ...node, children: [...node.children, { type: "element", tag: "item", attrs: [], children: [] }] }); }}>+ element</button>
+            <button className="xml-add-btn" onClick={(e) => { e.stopPropagation(); onUpdate(path, { ...node, children: [...node.children, { type: "text", text: "" }] }); }}>+ text</button>
+          </div>
+          <div className="xml-tree-row" style={{ "--depth": depth } as CSSProperties}>
+            <span className="xml-toggle-ph" />
+            <span className="xml-punct">&lt;/</span><span className="xml-tag">{node.tag}</span><span className="xml-punct">&gt;</span>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function EditableXmlTreeView({ body, onChange }: { body: string; onChange: (s: string) => void }) {
+  const [data, setData] = useState<XmlNode | null>(() => parseXmlToNode(body));
+  const lastBodyRef = useRef(body);
+
+  useEffect(() => {
+    if (body !== lastBodyRef.current) {
+      lastBodyRef.current = body;
+      const parsed = parseXmlToNode(body);
+      if (parsed) setData(parsed);
+    }
+  }, [body]);
+
+  if (!data) return <pre className="response-body">{body}</pre>;
+
+  function commit(next: XmlNode) {
+    const s = xmlNodeToString(next);
+    lastBodyRef.current = s;
+    setData(next);
+    onChange(s);
+  }
+
+  return (
+    <div className="xml-tree xml-tree-editable">
+      <EditableXmlTreeNode
+        node={data}
+        depth={0}
+        path={[]}
+        onUpdate={(p, n) => commit(p.length === 0 ? n : setXmlAtPath(data, p, n))}
+        onDelete={(p) => { if (p.length > 0) commit(deleteXmlAtPath(data, p)); }}
+      />
+    </div>
+  );
+}
+
 function JsonTreeNode({ label, value, depth }: { label?: string; value: unknown; depth: number }) {
   const isObj = value !== null && typeof value === "object";
   const isArr = Array.isArray(value);
@@ -751,10 +1126,11 @@ function EditableJsonTreeView({ body, onChange }: { body: string; onChange: (s: 
 
 function PrettyBody({ body, contentType }: { body: string; contentType?: string }) {
   const [treeMode, setTreeMode] = useState(true);
+  const trimmed = body.trimStart();
   const isJson =
     contentType?.includes("json") ||
-    body.trimStart().startsWith("{") ||
-    body.trimStart().startsWith("[");
+    trimmed.startsWith("{") ||
+    trimmed.startsWith("[");
   if (isJson) {
     try {
       const parsed = JSON.parse(body);
@@ -770,6 +1146,18 @@ function PrettyBody({ body, contentType }: { body: string; contentType?: string 
         </>
       );
     } catch { /* fall through */ }
+  }
+  const isXml = !isJson && (contentType?.includes("xml") || trimmed.startsWith("<"));
+  if (isXml && isValidXml(body)) {
+    return (
+      <>
+        <div className="body-view-toggle">
+          <button className={`body-view-btn${treeMode ? " active" : ""}`} onClick={() => setTreeMode(true)}>Tree</button>
+          <button className={`body-view-btn${!treeMode ? " active" : ""}`} onClick={() => setTreeMode(false)}>Raw</button>
+        </div>
+        {treeMode ? <XmlTreeView body={body} /> : <pre className="response-body">{body}</pre>}
+      </>
+    );
   }
   return <pre className="response-body">{body}</pre>;
 }
@@ -2193,6 +2581,8 @@ export default function App() {
     const hasContentType = active.some((r) => r.key.toLowerCase() === "content-type");
     if (bKind === "json" && !hasContentType)
       parts.push(`  -H 'Content-Type: application/json'`);
+    else if (bKind === "xml" && !hasContentType)
+      parts.push(`  -H 'Content-Type: application/xml'`);
     else if (bKind === "form" && !hasContentType)
       parts.push(`  -H 'Content-Type: application/x-www-form-urlencoded'`);
     for (const r of active)
@@ -2932,7 +3322,7 @@ export default function App() {
             {reqTab === "body" && (
               <div className="body-editor">
                 <div className="body-kind-bar">
-                  {(["none","json","text","form"] as BodyKind[]).map((k) => (
+                  {(["none","json","text","form","xml"] as BodyKind[]).map((k) => (
                     <label key={k} className={`body-kind${bodyKind === k ? " body-kind-active" : ""}`}>
                       <input type="radio" name="bodyKind" value={k} checked={bodyKind === k}
                         onChange={() => { setBodyKind(k); if (isProjectMode) markDirty(); }} />
@@ -2948,10 +3338,20 @@ export default function App() {
                       onClick={() => setReqBodyView("edit")}>Raw</button>
                   </div>
                 )}
-                {bodyKind !== "none" && (bodyKind !== "json" || reqBodyView === "edit" || !isValidJson(bodyContent)) && (
+                {bodyKind === "xml" && isValidXml(bodyContent) && (
+                  <div className="body-view-toggle">
+                    <button className={`body-view-btn${reqBodyView === "tree" ? " active" : ""}`}
+                      onClick={() => setReqBodyView("tree")}>Tree</button>
+                    <button className={`body-view-btn${reqBodyView === "edit" ? " active" : ""}`}
+                      onClick={() => setReqBodyView("edit")}>Raw</button>
+                  </div>
+                )}
+                {bodyKind !== "none" &&
+                  (bodyKind !== "json" || reqBodyView === "edit" || !isValidJson(bodyContent)) &&
+                  (bodyKind !== "xml"  || reqBodyView === "edit" || !isValidXml(bodyContent)) && (
                   <textarea
                     className="body-textarea"
-                    placeholder={bodyKind === "json" ? '{\n  "key": "value"\n}' : bodyKind === "form" ? "key=value&key2=value2" : "Request body"}
+                    placeholder={bodyKind === "json" ? '{\n  "key": "value"\n}' : bodyKind === "form" ? "key=value&key2=value2" : bodyKind === "xml" ? "<root>\n  <element>value</element>\n</root>" : "Request body"}
                     value={bodyContent}
                     onChange={(e) => { setBodyContent(e.target.value); if (isProjectMode) markDirty(); }}
                     spellCheck={false}
@@ -2959,6 +3359,12 @@ export default function App() {
                 )}
                 {bodyKind === "json" && reqBodyView === "tree" && isValidJson(bodyContent) && (
                   <EditableJsonTreeView
+                    body={bodyContent}
+                    onChange={(v) => { setBodyContent(v); if (isProjectMode) markDirty(); }}
+                  />
+                )}
+                {bodyKind === "xml" && reqBodyView === "tree" && isValidXml(bodyContent) && (
+                  <EditableXmlTreeView
                     body={bodyContent}
                     onChange={(v) => { setBodyContent(v); if (isProjectMode) markDirty(); }}
                   />

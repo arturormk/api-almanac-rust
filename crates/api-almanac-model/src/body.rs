@@ -6,6 +6,7 @@ pub enum BodyKind {
     Json,
     Text,
     Form,
+    Xml,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,5 +43,19 @@ value: "plain text body"
 "#;
         let body: RequestBody = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(body.kind, BodyKind::Text);
+    }
+
+    #[test]
+    fn round_trip_xml_body() {
+        let yaml = r#"
+kind: xml
+value: "<root><item>hello</item></root>"
+"#;
+        let body: RequestBody = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(body.kind, BodyKind::Xml);
+
+        let serialized = serde_yaml::to_string(&body).unwrap();
+        let body2: RequestBody = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(body2.kind, body.kind);
     }
 }

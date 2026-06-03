@@ -912,6 +912,7 @@ fn build_body(content: Option<String>, kind: Option<String>) -> Option<ResolvedB
     let kind = kind.as_deref().unwrap_or("text");
     let (body_kind, content_type) = match kind {
         "json" => (BodyKind::Json, "application/json"),
+        "xml"  => (BodyKind::Xml,  "application/xml"),
         "form" => (BodyKind::Form, "application/x-www-form-urlencoded"),
         _ => (BodyKind::Text, "text/plain"),
     };
@@ -922,11 +923,18 @@ fn request_def_to_data(req: RequestDef) -> RequestData {
     let (body_content, body_kind) = req
         .body
         .map(|b| {
-            let content = serde_json::to_string(&b.value).unwrap_or_default();
+            let content = match b.kind {
+                BodyKind::Text | BodyKind::Xml => match &b.value {
+                    serde_yaml::Value::String(s) => s.clone(),
+                    other => serde_json::to_string(other).unwrap_or_default(),
+                },
+                _ => serde_json::to_string(&b.value).unwrap_or_default(),
+            };
             let kind = match b.kind {
                 BodyKind::Json => "json",
                 BodyKind::Text => "text",
                 BodyKind::Form => "form",
+                BodyKind::Xml  => "xml",
             };
             (Some(content), Some(kind.to_string()))
         })
@@ -962,6 +970,7 @@ fn request_data_to_def(data: RequestData) -> RequestDef {
         let kind = match data.body_kind.as_deref().unwrap_or("text") {
             "json" => BodyKind::Json,
             "form" => BodyKind::Form,
+            "xml"  => BodyKind::Xml,
             _ => BodyKind::Text,
         };
         let value: serde_yaml::Value =

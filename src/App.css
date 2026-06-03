@@ -2415,3 +2415,114 @@
   color: var(--text);
   border-color: var(--text-dim);
 }
+
+/* ── XML tree view ──────────────────────────────────────────────────────── */
+
+.xml-tree {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  overflow-x: auto;
+}
+
+.xml-tree-row {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  padding-left: calc(var(--depth, 0) * 16px);
+  white-space: nowrap;
+}
+
+.xml-tree-expandable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.xml-tree-expandable:hover > .xml-tag,
+.xml-tree-expandable:hover > .xml-punct,
+.xml-tree-expandable:hover > .xml-summary {
+  opacity: 0.75;
+}
+
+.xml-toggle {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.xml-toggle-ph {
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.xml-punct      { color: var(--text-dim); }
+.xml-tag        { color: #e8a44d; }
+.xml-attr-name  { color: #6ab0f5; }
+.xml-attr-value { color: var(--accent); }
+.xml-text-value { color: var(--text); font-style: italic; }
+.xml-summary    { color: var(--text-dim); font-style: italic; }
+
+/* ── Editable XML tree ───────────────────────────────────────────────────── */
+
+.xml-tree-editable .xml-tree-row {
+  align-items: center;
+  position: relative;
+}
+
+.xml-input {
+  font: inherit;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: inherit;
+  padding: 0 1px;
+  min-width: 2ch;
+  outline: none;
+  line-height: inherit;
+}
+
+.xml-input:focus { border-bottom-color: var(--accent); }
+.xml-input.xml-attr-value { color: var(--accent); }
+.xml-input.xml-text-value { color: var(--text); font-style: italic; }
+
+.xml-delete-btn {
+  display: none;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 3px;
+  font-size: 13px;
+  line-height: 1;
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
+.xml-tree-row:hover .xml-delete-btn { display: inline; }
+.xml-delete-btn:hover { color: #f47474; }
+
+.xml-add-row {
+  display: flex;
+  gap: 4px;
+  margin: 3px 0;
+  padding-left: calc(var(--depth, 0) * 16px + 14px);
+}
+
+.xml-add-btn {
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--text-dim) 40%, transparent);
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.xml-add-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
