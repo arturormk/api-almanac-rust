@@ -2,6 +2,7 @@ use api_almanac_model::Expect;
 use crate::response::HttpResponse;
 use serde::Serialize;
 use std::collections::HashMap;
+use roxmltree::Document as XmlDocument;
 
 // ── Result types ───────────────────────────────────────────────────────────
 
@@ -79,6 +80,33 @@ pub fn run_checks(expect: &Expect, response: &HttpResponse) -> Vec<Check> {
         }
     }
 
+    if !expect.xml.is_empty() {
+        match XmlDocument::parse(&response.body) {
+            Ok(doc) => {
+                for (path, rule) in &expect.xml {
+                    let actual = get_xml_path(&doc, path);
+                    let (passed, expected) = check_string_rule(rule, actual.as_deref());
+                    checks.push(Check {
+                        name: format!("xml.{path}"),
+                        passed,
+                        expected,
+                        actual,
+                    });
+                }
+            }
+            Err(_) => {
+                for path in expect.xml.keys() {
+                    checks.push(Check {
+                        name: format!("xml.{path}"),
+                        passed: false,
+                        expected: "XML response body".into(),
+                        actual: Some("body is not valid XML".into()),
+                    });
+                }
+            }
+        }
+    }
+
     checks
 }
 
@@ -118,6 +146,86 @@ pub fn apply_captures(
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/// Navigate an XML document using a dot-notation path.
+///
+/// Path format mirrors `sketch_xml`: first segment is the root tag name, subsequent
+/// segments are child tag names, `@attr` reads an attribute, and `[N]` selects the
+/// Nth same-tag sibling (e.g. `response.items.item[0].name`).
+pub fn get_xml_path(doc: &XmlDocument, path: &str) -> Option<String> {
+    let root = doc.root_element();
+    let (head, rest) = split_first_segment(path);
+    if head != root.tag_name().name() {
+        return None;
+    }
+    match rest {
+        None => node_text(root),
+        Some(r) => navigate_xml(root, r),
+    }
+}
+
+fn navigate_xml<'a>(node: roxmltree::Node<'a, 'a>, path: &str) -> Option<String> {
+    let (head, rest) = split_first_segment(path);
+
+    if let Some(attr_name) = head.strip_prefix('@') {
+        return node.attribute(attr_name).map(str::to_string);
+    }
+
+    let (tag, idx) = parse_tag_index(head);
+    let children: Vec<_> = node
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == tag)
+        .collect();
+    let child = match idx {
+        Some(i) => *children.get(i)?,
+        None => *children.first()?,
+    };
+
+    match rest {
+        None => node_text(child),
+        Some(r) => navigate_xml(child, r),
+    }
+}
+
+/// Split a dot-notation path at the first `.` that is not inside `[...]`.
+fn split_first_segment(path: &str) -> (&str, Option<&str>) {
+    let bytes = path.as_bytes();
+    let mut depth = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'[' => depth += 1,
+            b']' => depth = depth.saturating_sub(1),
+            b'.' if depth == 0 => return (&path[..i], Some(&path[i + 1..])),
+            _ => {}
+        }
+    }
+    (path, None)
+}
+
+fn parse_tag_index(segment: &str) -> (&str, Option<usize>) {
+    if let Some(bracket) = segment.find('[') {
+        if let Some(close) = segment[bracket..].find(']') {
+            let tag = &segment[..bracket];
+            let idx_str = &segment[bracket + 1..bracket + close];
+            if let Ok(i) = idx_str.parse::<usize>() {
+                return (tag, Some(i));
+            }
+        }
+    }
+    (segment, None)
+}
+
+fn node_text(node: roxmltree::Node) -> Option<String> {
+    let text: String = node
+        .children()
+        .filter(|n| n.is_text())
+        .filter_map(|n| n.text())
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
 
 /// Navigate a JSON value using a simple dot-notation path (e.g. `"user.email"`).
 /// Array indexing with `key[0]` is also supported.
@@ -293,5 +401,59 @@ mod tests {
         let response = resp(200, "{}", 50);
         let captured = apply_captures(&captures, &response);
         assert_eq!(captured["x_request_id"], "application/json");
+    }
+
+    fn xml_resp(body: &str) -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            status_text: "OK".into(),
+            headers: [("content-type".into(), "application/xml".into())]
+                .into_iter()
+                .collect(),
+            body: body.into(),
+            duration_ms: 50,
+            url: "http://example.com".into(),
+        }
+    }
+
+    #[test]
+    fn xml_leaf_equals() {
+        let expect = Expect {
+            xml: [("response.name".into(), "equals Ada".into())].into_iter().collect(),
+            ..Default::default()
+        };
+        let checks = run_checks(&expect, &xml_resp("<response><name>Ada</name></response>"));
+        assert!(checks[0].passed, "{:?}", checks[0]);
+    }
+
+    #[test]
+    fn xml_attribute_exists() {
+        let expect = Expect {
+            xml: [("response.user.@id".into(), "exists".into())].into_iter().collect(),
+            ..Default::default()
+        };
+        let checks = run_checks(&expect, &xml_resp(r#"<response><user id="42"><name>Ada</name></user></response>"#));
+        assert!(checks[0].passed, "{:?}", checks[0]);
+    }
+
+    #[test]
+    fn xml_array_index() {
+        let expect = Expect {
+            xml: [("items.item[1].name".into(), "equals Grace".into())].into_iter().collect(),
+            ..Default::default()
+        };
+        let body = "<items><item><name>Ada</name></item><item><name>Grace</name></item></items>";
+        let checks = run_checks(&expect, &xml_resp(body));
+        assert!(checks[0].passed, "{:?}", checks[0]);
+    }
+
+    #[test]
+    fn xml_invalid_body_fails() {
+        let expect = Expect {
+            xml: [("root.field".into(), "exists".into())].into_iter().collect(),
+            ..Default::default()
+        };
+        let checks = run_checks(&expect, &xml_resp("not xml"));
+        assert!(!checks[0].passed);
     }
 }

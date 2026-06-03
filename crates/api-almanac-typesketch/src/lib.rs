@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::HashMap;
 
 // ── SketchNode ─────────────────────────────────────────────────────────────
 
@@ -34,6 +35,76 @@ pub fn sketch_json(value: &Value) -> SketchNode {
 pub fn to_yaml_string(node: &SketchNode) -> String {
     let yaml_val = to_yaml_value(node);
     serde_yaml::to_string(&yaml_val).unwrap_or_default()
+}
+
+/// Infer a `SketchNode` tree from an XML string.
+///
+/// The root element becomes the single top-level key. Repeated same-name
+/// sibling elements are treated as arrays. Attributes are prefixed with `@`.
+/// Text content of mixed elements (attributes + children + text) is keyed as `_`.
+pub fn sketch_xml(xml_str: &str) -> Result<SketchNode, String> {
+    let doc = roxmltree::Document::parse(xml_str).map_err(|e| e.to_string())?;
+    let root = doc.root_element();
+    let name = root.tag_name().name().to_string();
+    let inner = sketch_element(root);
+    Ok(SketchNode::Object(vec![(name, inner)]))
+}
+
+// ── XML inference ──────────────────────────────────────────────────────────
+
+fn sketch_element(node: roxmltree::Node) -> SketchNode {
+    let attrs: Vec<(String, SketchNode)> = node
+        .attributes()
+        .map(|a| (format!("@{}", a.name()), classify_string(a.value())))
+        .collect();
+
+    // Group child elements by local name, preserving insertion order.
+    let mut child_order: Vec<String> = Vec::new();
+    let mut child_groups: HashMap<String, Vec<SketchNode>> = HashMap::new();
+    for child in node.children().filter(|n| n.is_element()) {
+        let tag = child.tag_name().name().to_string();
+        let entry = child_groups.entry(tag.clone()).or_insert_with(|| {
+            child_order.push(tag);
+            Vec::new()
+        });
+        entry.push(sketch_element(child));
+    }
+
+    let text = node
+        .children()
+        .filter(|n| n.is_text())
+        .filter_map(|n| n.text())
+        .map(str::trim)
+        .find(|t| !t.is_empty());
+
+    // Pure leaf: no attributes, no child elements.
+    if attrs.is_empty() && child_groups.is_empty() {
+        return match text {
+            Some(t) => classify_string(t),
+            None => SketchNode::Str,
+        };
+    }
+
+    let mut fields: Vec<(String, SketchNode)> = attrs;
+
+    for tag in &child_order {
+        let group = &child_groups[tag];
+        let node_sketch = if group.len() > 1 {
+            SketchNode::Array(Box::new(merge_types(group)))
+        } else {
+            group[0].clone()
+        };
+        fields.push((tag.clone(), node_sketch));
+    }
+
+    // Mixed content: element has both child elements (or attributes) and text.
+    if let Some(t) = text {
+        if !child_groups.is_empty() {
+            fields.push(("_".to_string(), classify_string(t)));
+        }
+    }
+
+    SketchNode::Object(fields)
 }
 
 // ── Inference ──────────────────────────────────────────────────────────────
@@ -148,6 +219,14 @@ fn merge_types(types: &[SketchNode]) -> SketchNode {
         return merge_objects(types, types.len());
     }
 
+    // Arrays of objects → merge inner schemas (e.g. same repeated child across different parents)
+    if types.iter().all(|t| matches!(t, SketchNode::Array(i) if matches!(i.as_ref(), SketchNode::Object(_)))) {
+        let inners: Vec<SketchNode> = types.iter().filter_map(|t| {
+            if let SketchNode::Array(inner) = t { Some((**inner).clone()) } else { None }
+        }).collect();
+        return SketchNode::Array(Box::new(merge_objects(&inners, inners.len())));
+    }
+
     // All same → return that type
     if types.iter().all(|t| t == &types[0]) {
         return types[0].clone();
@@ -228,9 +307,10 @@ fn to_yaml_value(node: &SketchNode) -> serde_yaml::Value {
             serde_yaml::Value::Sequence(vec![to_yaml_value(item)])
         }
         SketchNode::Empty => serde_yaml::Value::Sequence(vec![]),
-        SketchNode::Nullable(inner) => {
-            serde_yaml::Value::String(format!("{} | null", type_label(inner)))
-        }
+        SketchNode::Nullable(inner) => match inner.as_ref() {
+            SketchNode::Object(_) | SketchNode::Array(_) => to_yaml_value(inner),
+            other => serde_yaml::Value::String(format!("{} | null", type_label(other))),
+        },
         scalar => serde_yaml::Value::String(type_label(scalar).to_string()),
     }
 }
@@ -336,5 +416,102 @@ mod tests {
     fn array_object_merge_absent_field_becomes_nullable() {
         let out = yaml(r#"[{"id":1,"name":"Ada"},{"id":2}]"#);
         assert!(out.contains("null"), "absent field should be nullable: {out}");
+    }
+
+    fn xml_sketch(xml: &str) -> String {
+        to_yaml_string(&sketch_xml(xml).expect("valid XML"))
+    }
+
+    #[test]
+    fn xml_simple_leaf() {
+        let out = xml_sketch("<status>active</status>");
+        assert!(out.contains("status: string"), "{out}");
+    }
+
+    #[test]
+    fn xml_element_with_attributes() {
+        let out = xml_sketch(r#"<user id="550e8400-e29b-41d4-a716-446655440000" email="ada@example.com"/>"#);
+        assert!(out.contains("'@id': uuid"), "{out}");
+        assert!(out.contains("'@email': email"), "{out}");
+    }
+
+    #[test]
+    fn xml_repeated_elements() {
+        let out = xml_sketch(r#"
+            <users>
+                <user><name>Ada</name><email>ada@example.com</email></user>
+                <user><name>Grace</name><email>grace@example.com</email></user>
+            </users>
+        "#);
+        assert!(out.contains("user:"), "{out}");
+        assert!(out.contains("- name: string"), "{out}");
+        assert!(out.contains("email: email"), "{out}");
+    }
+
+    #[test]
+    fn xml_attributes_and_text() {
+        let out = xml_sketch(r#"<price currency="USD">9.99</price>"#);
+        assert!(out.contains("'@currency': string"), "{out}");
+        // pure leaf with attribute — no "_" key since there are no child elements
+        assert!(out.contains("price:"), "{out}");
+    }
+
+    #[test]
+    fn xml_nullable_object_renders_deep() {
+        // One recinto has evento children, another doesn't → evento should show
+        // full sub-structure (not "unknown | null") because Nullable(Array(Object))
+        // must render structurally.
+        let out = xml_sketch(r#"
+            <cartelera>
+                <recinto id="1">
+                    <evento><nombre>Concierto</nombre><fecha>2026-06-10</fecha></evento>
+                    <evento><nombre>Teatro</nombre><fecha>2026-06-11</fecha></evento>
+                </recinto>
+                <recinto id="2"/>
+            </cartelera>
+        "#);
+        assert!(!out.contains("unknown"), "should not contain 'unknown': {out}");
+        assert!(out.contains("nombre"), "should drill into evento fields: {out}");
+        assert!(out.contains("fecha"), "should show fecha field: {out}");
+    }
+
+    #[test]
+    fn xml_array_merged_across_parents() {
+        // Two recintos each have repeated evento children but with different fields.
+        // Should produce a merged schema, not "mixed".
+        let out = xml_sketch(r#"
+            <cartelera>
+                <recinto id="1">
+                    <evento><nombre>Concierto</nombre></evento>
+                    <evento><nombre>Teatro</nombre></evento>
+                </recinto>
+                <recinto id="2">
+                    <evento><nombre>Opera</nombre><url>https://example.com</url></evento>
+                    <evento><nombre>Ballet</nombre><url>https://example.com/2</url></evento>
+                </recinto>
+            </cartelera>
+        "#);
+        assert!(!out.contains("mixed"), "should not be mixed: {out}");
+        assert!(out.contains("nombre"), "should show nombre field: {out}");
+    }
+
+    #[test]
+    fn xml_nested() {
+        let out = xml_sketch(r#"
+            <response>
+                <meta>
+                    <created_at>2026-05-20T13:12:30Z</created_at>
+                    <total>42</total>
+                </meta>
+                <items>
+                    <item id="1"><url>https://example.com/1</url></item>
+                    <item id="2"><url>https://example.com/2</url></item>
+                </items>
+            </response>
+        "#);
+        assert!(out.contains("response:"), "{out}");
+        assert!(out.contains("created_at: datetime"), "{out}");
+        assert!(out.contains("'@id': string"), "{out}");
+        assert!(out.contains("url: url"), "{out}");
     }
 }

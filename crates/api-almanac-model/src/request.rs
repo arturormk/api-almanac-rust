@@ -20,6 +20,10 @@ pub struct Expect {
     /// JSON body checks: dot-notation path → rule string (`"exists"`, `"equals X"`, `"contains X"`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub json: HashMap<String, String>,
+    /// XML body checks: dot-notation path → rule string (`"exists"`, `"equals X"`, `"contains X"`).
+    /// Path format: `rootTag.child.grandchild`, `rootTag.items.item[0].name`, `rootTag.@attr`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub xml: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

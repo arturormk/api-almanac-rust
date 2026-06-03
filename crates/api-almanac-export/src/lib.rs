@@ -265,6 +265,7 @@ mod tests {
             time_ms: Some("< 500".into()),
             headers: HashMap::new(),
             json: HashMap::new(),
+            xml: HashMap::new(),
         });
         let md = render_request_md(&req, None, None);
         assert!(md.contains("## Expectations"), "{md}");

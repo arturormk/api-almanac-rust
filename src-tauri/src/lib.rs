@@ -85,6 +85,8 @@ pub struct ExpectData {
     pub headers: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub json: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub xml: HashMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -630,6 +632,13 @@ fn sketch_json(body: String) -> Result<String, String> {
     Ok(typesketch::to_yaml_string(&typesketch::sketch_json(&value)))
 }
 
+/// Infer a TypeSketch YAML sketch from an XML response body string.
+#[tauri::command]
+fn sketch_xml(body: String) -> Result<String, String> {
+    let node = typesketch::sketch_xml(&body)?;
+    Ok(typesketch::to_yaml_string(&node))
+}
+
 /// Save a TypeSketch YAML sketch to `sketches/<request_uid>.typesketch.yaml`
 /// inside the currently open project.
 #[tauri::command]
@@ -959,6 +968,7 @@ fn request_def_to_data(req: RequestDef) -> RequestData {
             time_ms: e.time_ms,
             headers: e.headers,
             json: e.json,
+            xml: e.xml,
         }),
     }
 }
@@ -993,6 +1003,7 @@ fn request_data_to_def(data: RequestData) -> RequestDef {
             time_ms: e.time_ms,
             headers: e.headers,
             json: e.json,
+            xml: e.xml,
         }),
         capture: data.capture,
         redact: Default::default(),
@@ -1285,6 +1296,7 @@ pub fn run() {
             get_session_vars,
             clear_session_vars,
             sketch_json,
+            sketch_xml,
             save_sketch,
             export_request_markdown,
             get_latest_response,

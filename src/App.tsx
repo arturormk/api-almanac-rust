@@ -116,6 +116,7 @@ interface ExpectData {
   time_ms?: string;
   headers?: Record<string, string>;
   json?: Record<string, string>;
+  xml?: Record<string, string>;
 }
 
 interface RequestData {
@@ -223,6 +224,36 @@ function flattenJsonFields(obj: unknown, prefix = ""): Record<string, string> {
       result[path] = String(v);
     } else {
       Object.assign(result, flattenJsonFields(v, path));
+    }
+  }
+  return result;
+}
+
+function flattenXmlFields(el: Element, prefix: string): Record<string, string> {
+  const result: Record<string, string> = {};
+
+  for (const attr of Array.from(el.attributes)) {
+    result[`${prefix}.@${attr.name}`] = attr.value;
+  }
+
+  const children = Array.from(el.children);
+  if (children.length === 0) {
+    const text = el.textContent?.trim() ?? "";
+    result[prefix] = text || "exists";
+    return result;
+  }
+
+  const byTag: Record<string, Element[]> = {};
+  for (const child of children) {
+    const tag = child.tagName;
+    if (!byTag[tag]) byTag[tag] = [];
+    byTag[tag].push(child);
+  }
+  for (const [tag, els] of Object.entries(byTag)) {
+    if (els.length === 1) {
+      Object.assign(result, flattenXmlFields(els[0], `${prefix}.${tag}`));
+    } else {
+      els.forEach((e, i) => Object.assign(result, flattenXmlFields(e, `${prefix}.${tag}[${i}]`)));
     }
   }
   return result;
@@ -375,12 +406,14 @@ function ExpectationsEditor({
   timeMs, onTimeMsChange,
   headers, onHeadersChange,
   json, onJsonChange,
+  xml, onXmlChange,
   onImportFromResponse,
 }: {
   status: string; onStatusChange: (v: string) => void;
   timeMs: string; onTimeMsChange: (v: string) => void;
   headers: KvRow[]; onHeadersChange: (rows: KvRow[]) => void;
   json: KvRow[]; onJsonChange: (rows: KvRow[]) => void;
+  xml: KvRow[]; onXmlChange: (rows: KvRow[]) => void;
   onImportFromResponse?: () => void;
 }) {
   return (
@@ -423,6 +456,15 @@ function ExpectationsEditor({
           rows={json}
           onChange={onJsonChange}
           keyPlaceholder="json.field.path"
+          valuePlaceholder="exists · equals value · contains text"
+        />
+      </div>
+      <div className="expects-section">
+        <div className="expects-section-label">XML</div>
+        <KvEditor
+          rows={xml}
+          onChange={onXmlChange}
+          keyPlaceholder="root.element.path or root.@attr"
           valuePlaceholder="exists · equals value · contains text"
         />
       </div>
@@ -2534,6 +2576,7 @@ export default function App() {
   const [expectTimeMs, setExpectTimeMs] = useState<string>("");
   const [expectHeaders, setExpectHeaders] = useState<KvRow[]>([mkRow()]);
   const [expectJson, setExpectJson] = useState<KvRow[]>([mkRow()]);
+  const [expectXml, setExpectXml] = useState<KvRow[]>([mkRow()]);
   const [bodyKind, setBodyKind] = useState<BodyKind>("none");
   const [bodyContent, setBodyContent] = useState("");
 
@@ -2615,6 +2658,7 @@ export default function App() {
     setExpectTimeMs(data.expect?.time_ms ?? "");
     setExpectHeaders(mapToRowsSorted(data.expect?.headers ?? {}));
     setExpectJson(mapToRowsSorted(data.expect?.json ?? {}));
+    setExpectXml(mapToRowsSorted(data.expect?.xml ?? {}));
     const newCases: Record<string, KvRow[]> = {};
     for (const [name, vars] of Object.entries(data.cases ?? {})) {
       newCases[name] = mapToRows(vars);
@@ -2637,7 +2681,9 @@ export default function App() {
     setExpectHeaders(hdrs.length > 0 ? hdrs : [mkRow()]);
 
     const ct = response.headers["content-type"] ?? "";
-    if (ct.includes("json") || response.body.trimStart().startsWith("{")) {
+    const looksJson = ct.includes("json") || response.body.trimStart().startsWith("{") || response.body.trimStart().startsWith("[");
+    const looksXml = !looksJson && (ct.includes("xml") || response.body.trimStart().startsWith("<"));
+    if (looksJson) {
       try {
         const parsed = JSON.parse(response.body);
         const fields = flattenJsonFields(parsed);
@@ -2646,8 +2692,21 @@ export default function App() {
           .map(([k, v]) => mkRow(k, v));
         setExpectJson(rows.length > 0 ? rows : [mkRow()]);
       } catch { /* ignore */ }
+      setExpectXml([mkRow()]);
+    } else if (looksXml) {
+      try {
+        const doc = new DOMParser().parseFromString(response.body, "text/xml");
+        const root = doc.documentElement;
+        const fields = flattenXmlFields(root, root.tagName);
+        const rows = Object.entries(fields)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => mkRow(k, v));
+        setExpectXml(rows.length > 0 ? rows : [mkRow()]);
+      } catch { /* ignore */ }
+      setExpectJson([mkRow()]);
     } else {
       setExpectJson([mkRow()]);
+      setExpectXml([mkRow()]);
     }
 
     if (isProjectMode) markDirty();
@@ -2660,7 +2719,8 @@ export default function App() {
     }
     const expectsActive =
       expectStatus.trim() || expectTimeMs.trim() ||
-      activeRows(expectHeaders).length > 0 || activeRows(expectJson).length > 0;
+      activeRows(expectHeaders).length > 0 || activeRows(expectJson).length > 0 ||
+      activeRows(expectXml).length > 0;
     return {
       uid: reqUid, id: reqId, name: reqName || reqId, method, url,
       headers: toMap(reqHeaders), query: toMap(params),
@@ -2673,6 +2733,7 @@ export default function App() {
         time_ms: expectTimeMs.trim() || undefined,
         headers: toMap(expectHeaders),
         json: toMap(expectJson),
+        xml: toMap(expectXml),
       } : undefined,
       ...overrides,
     };
@@ -2989,11 +3050,17 @@ export default function App() {
       setResponse(resp);
       const ct = resp.headers["content-type"] ?? "";
       const looksJson = ct.includes("json") || resp.body.trimStart().startsWith("{") || resp.body.trimStart().startsWith("[");
+      const looksXml = !looksJson && (ct.includes("xml") || resp.body.trimStart().startsWith("<"));
       if (looksJson && resp.body.trim()) {
         try {
           const yaml = await invoke<string>("sketch_json", { body: resp.body });
           setSketchYaml(yaml);
         } catch { /* non-JSON body — no sketch */ }
+      } else if (looksXml && resp.body.trim()) {
+        try {
+          const yaml = await invoke<string>("sketch_xml", { body: resp.body });
+          setSketchYaml(yaml);
+        } catch { /* non-XML body — no sketch */ }
       }
       setResTab("body");
     } catch (e) { setReqError(String(e)); }
@@ -3303,7 +3370,8 @@ export default function App() {
                 )}
                 {t === "expects" && (() => {
                   const n = (expectStatus.trim() ? 1 : 0) + (expectTimeMs.trim() ? 1 : 0)
-                    + activeRows(expectHeaders).length + activeRows(expectJson).length;
+                    + activeRows(expectHeaders).length + activeRows(expectJson).length
+                    + activeRows(expectXml).length;
                   return n > 0 ? <span className="tab-count">{n}</span> : null;
                 })()}
               </button>
@@ -3496,6 +3564,8 @@ export default function App() {
                 onHeadersChange={(v) => { setExpectHeaders(v); if (isProjectMode) markDirty(); }}
                 json={expectJson}
                 onJsonChange={(v) => { setExpectJson(v); if (isProjectMode) markDirty(); }}
+                xml={expectXml}
+                onXmlChange={(v) => { setExpectXml(v); if (isProjectMode) markDirty(); }}
                 onImportFromResponse={response ? handleImportExpects : undefined}
               />
             )}
