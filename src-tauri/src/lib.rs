@@ -1205,7 +1205,23 @@ fn delete_environment(state: State<'_, AppState>, env_id: String) -> Result<Proj
 
 #[tauri::command]
 fn list_recent_projects(app: tauri::AppHandle) -> Vec<RecentProject> {
-    load_recent(&app)
+    let list = load_recent(&app);
+    let original_len = list.len();
+    let pruned: Vec<RecentProject> = list
+        .into_iter()
+        .filter(|r| std::path::Path::new(&r.path).exists())
+        .collect();
+    if pruned.len() < original_len {
+        save_recent(&app, &pruned);
+    }
+    pruned
+}
+
+#[tauri::command]
+fn remove_recent_project(app: tauri::AppHandle, path: String) {
+    let mut list = load_recent(&app);
+    list.retain(|r| r.path != path);
+    save_recent(&app, &list);
 }
 
 #[tauri::command]
@@ -1272,6 +1288,7 @@ pub fn run() {
             delete_environment,
             list_recent_projects,
             open_recent_project,
+            remove_recent_project,
             create_group,
             rename_group,
             delete_group,

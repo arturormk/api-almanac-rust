@@ -1422,6 +1422,7 @@ function Sidebar({
   onNewProject,
   onOpenProject,
   onOpenRecent,
+  onRemoveRecent,
   onAddRequest,
   onAddRequestToFolder,
   onSelectRequest,
@@ -1445,6 +1446,7 @@ function Sidebar({
   onNewProject: () => void;
   onOpenProject: () => void;
   onOpenRecent: (path: string) => void;
+  onRemoveRecent: (path: string) => void;
   onAddRequest: () => void;
   onAddRequestToFolder: (folder: string) => void;
   onSelectRequest: (filePath: string) => void;
@@ -1789,15 +1791,20 @@ function Sidebar({
             {showRecentMenu && (
               <div className="recent-menu">
                 {recentProjects.map((rp) => (
-                  <button
-                    key={rp.path}
-                    className="recent-menu-item"
-                    onClick={() => { setShowRecentMenu(false); onOpenRecent(rp.path); }}
-                    title={rp.path}
-                  >
-                    <span className="recent-item-name">{rp.name}</span>
-                    <span className="recent-item-path">{truncatePath(rp.path)}</span>
-                  </button>
+                  <div key={rp.path} className="recent-menu-item" title={rp.path}>
+                    <button
+                      className="recent-item-open"
+                      onClick={() => { setShowRecentMenu(false); onOpenRecent(rp.path); }}
+                    >
+                      <span className="recent-item-name">{rp.name}</span>
+                      <span className="recent-item-path">{truncatePath(rp.path)}</span>
+                    </button>
+                    <button
+                      className="recent-item-remove"
+                      title="Remove from list"
+                      onClick={(e) => { e.stopPropagation(); onRemoveRecent(rp.path); }}
+                    >×</button>
+                  </div>
                 ))}
               </div>
             )}
@@ -2348,6 +2355,11 @@ export default function App() {
     }
   }
 
+  async function removeRecentProject(path: string) {
+    await invoke("remove_recent_project", { path });
+    await loadRecentProjects();
+  }
+
   async function openRecentProject(path: string) {
     try {
       const data = await invoke<ProjectData>("open_recent_project", { path });
@@ -2693,6 +2705,7 @@ export default function App() {
         onNewProject={newProject}
         onOpenProject={openProject}
         onOpenRecent={openRecentProject}
+        onRemoveRecent={removeRecentProject}
         onAddRequest={addNewRequest}
         onAddRequestToFolder={addNewRequestToFolder}
         onSelectRequest={selectRequest}

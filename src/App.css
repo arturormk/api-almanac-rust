@@ -104,16 +104,12 @@
 
 .recent-menu-item {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-direction: row;
+  align-items: center;
   width: 100%;
-  padding: 6px 8px;
   border: none;
   border-bottom: 1px solid var(--border);
   background: none;
-  cursor: pointer;
-  text-align: left;
-  gap: 1px;
 }
 
 .recent-menu-item:last-child {
@@ -122,6 +118,47 @@
 
 .recent-menu-item:hover {
   background: var(--bg-2);
+}
+
+.recent-item-open {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  gap: 1px;
+  min-width: 0;
+}
+
+.recent-item-remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 100%;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+  line-height: 1;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.recent-menu-item:hover .recent-item-remove {
+  opacity: 1;
+}
+
+.recent-item-remove:hover {
+  color: var(--text);
 }
 
 .recent-item-name {
